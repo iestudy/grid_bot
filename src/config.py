@@ -34,9 +34,9 @@ class GridEnvelopeConfig:
     この範囲内の変更のみ、機械的条件を満たせば人間承認なしでマージ・反映してよい。
     範囲外はTier2（人間承認待ち）にフォールバックする。
     """
-    grid_width_min_jpy: float = 0.4
-    grid_width_max_jpy: float = 0.6
-    grid_width_default_jpy: float = 0.5
+    grid_width_min_jpy: float = 0.6
+    grid_width_max_jpy: float = 1.0
+    grid_width_default_jpy: float = 0.8
 
     max_buy_levels: int = 5
     max_sell_levels: int = 5

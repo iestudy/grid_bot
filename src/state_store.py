@@ -37,6 +37,21 @@ class OrderRecord:
     exchange_order_id: Optional[str] = None
 
 
+@dataclass
+class PortfolioState:
+    """
+    バックテストのcompute_pnlと数学的に同一の会計方式で運用中のポジションを追跡する。
+      cash_flow: 買いで支払った額をマイナス、売りで受け取った額をプラスとして積算
+      net_inventory: 買い数量合計 - 売り数量合計（プラスなら在庫超過、マイナスなら在庫不足）
+
+    この2つの値から、任意の時点の含み損益は
+      unrealized_pnl = cash_flow + net_inventory * current_price
+    で計算できる（グリッドのメイカーリベートは別途加算）。
+    """
+    cash_flow: float = 0.0
+    net_inventory: float = 0.0
+
+
 class StateStore(ABC):
     @abstractmethod
     def save_order(self, record: OrderRecord) -> None: ...
@@ -50,6 +65,12 @@ class StateStore(ABC):
     @abstractmethod
     def update_state(self, request_id: str, state: OrderState, exchange_order_id: Optional[str] = None) -> None: ...
 
+    @abstractmethod
+    def get_portfolio_state(self) -> PortfolioState: ...
+
+    @abstractmethod
+    def save_portfolio_state(self, state: PortfolioState) -> None: ...
+
     def new_request_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -57,6 +78,7 @@ class StateStore(ABC):
 class InMemoryStateStore(StateStore):
     def __init__(self):
         self._orders: Dict[str, OrderRecord] = {}
+        self._portfolio_state = PortfolioState()
 
     def save_order(self, record: OrderRecord) -> None:
         self._orders[record.request_id] = record
@@ -77,6 +99,12 @@ class InMemoryStateStore(StateStore):
         rec.state = state
         if exchange_order_id is not None:
             rec.exchange_order_id = exchange_order_id
+
+    def get_portfolio_state(self) -> PortfolioState:
+        return self._portfolio_state
+
+    def save_portfolio_state(self, state: PortfolioState) -> None:
+        self._portfolio_state = state
 
 
 class DynamoDBStateStore(StateStore):
@@ -123,6 +151,8 @@ class DynamoDBStateStore(StateStore):
         resp = self._table.scan()
         result = {}
         for item in resp.get("Items", []):
+            if item.get("request_id") == "__PORTFOLIO_STATE__":
+                continue  # ポートフォリオ状態レコードはstateキーを持たないため除外
             state = OrderState(item["state"])
             if state in (OrderState.PENDING, OrderState.OPEN):
                 result[item["request_id"]] = OrderRecord(
@@ -149,3 +179,22 @@ class DynamoDBStateStore(StateStore):
             ExpressionAttributeNames=expr_names,
             ExpressionAttributeValues=expr_values,
         )
+
+    def get_portfolio_state(self) -> PortfolioState:
+        resp = self._table.get_item(Key={"request_id": "__PORTFOLIO_STATE__"})
+        item = resp.get("Item")
+        if item is None:
+            return PortfolioState()
+        return PortfolioState(
+            cash_flow=float(item["cash_flow"]),
+            net_inventory=float(item["net_inventory"]),
+        )
+
+    def save_portfolio_state(self, state: PortfolioState) -> None:
+        # ordersテーブルと同じテーブルに固定キー"__PORTFOLIO_STATE__"で1レコードとして保存する。
+        # 頻繁に更新されるため、別テーブルに切り出す場合は将来的に見直すこと。
+        self._table.put_item(Item={
+            "request_id": "__PORTFOLIO_STATE__",
+            "cash_flow": str(state.cash_flow),
+            "net_inventory": str(state.net_inventory),
+        })

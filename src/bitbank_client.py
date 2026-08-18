@@ -53,6 +53,27 @@ class BitbankClient:
         r.raise_for_status()
         return r.json()
 
+    def get_transactions(self, pair: str, yyyymmdd: Optional[str] = None) -> Dict[str, Any]:
+        """
+        指定日の全約定履歴を取得。YYYYMMDD省略時は直近60件。
+        バックテスト用のヒストリカルデータ取得に使用する。
+        """
+        path = f"/{pair}/transactions"
+        if yyyymmdd:
+            path += f"/{yyyymmdd}"
+        url = f"{self.PUBLIC_BASE}{path}"
+        r = self._session.get(url, timeout=self.timeout)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("data", {})
+
+    def get_candlestick(self, pair: str, candle_type: str, yyyymmdd: str) -> Dict[str, Any]:
+        url = f"{self.PUBLIC_BASE}/{pair}/candlestick/{candle_type}/{yyyymmdd}"
+        r = self._session.get(url, timeout=self.timeout)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("data", {})
+
     # ---------- Private API（署名必須） ----------
 
     def _require_credentials(self):
@@ -94,6 +115,31 @@ class BitbankClient:
         query = f"?pair={pair}"
         headers = self._sign_get(path, query)
         r = self._session.get(self.PRIVATE_BASE + path + query, headers=headers, timeout=self.timeout)
+        return self._handle_response(r)
+
+    def get_order_status(self, pair: str, order_id: int) -> Dict[str, Any]:
+        """
+        個別注文の現在状態を取得する。
+        get_active_ordersから注文が消えた際、それが「約定した」のか
+        「キャンセルされた」のかを判別するために使用する。
+        """
+        self._require_credentials()
+        path = "/user/spot/order"
+        query = f"?pair={pair}&order_id={order_id}"
+        headers = self._sign_get(path, query)
+        r = self._session.get(self.PRIVATE_BASE + path + query, headers=headers, timeout=self.timeout)
+        return self._handle_response(r)
+
+    def get_subscribe_info(self) -> Dict[str, Any]:
+        """
+        Privateストリーム(PubNub経由の注文・資産更新通知)用のチャンネル名と
+        トークンを取得する。トークンは12時間で失効するため、ws_private_client側で
+        定期的に再取得する必要がある。
+        """
+        self._require_credentials()
+        path = "/user/subscribe"
+        headers = self._sign_get(path)
+        r = self._session.get(self.PRIVATE_BASE + path, headers=headers, timeout=self.timeout)
         return self._handle_response(r)
 
     def create_order(

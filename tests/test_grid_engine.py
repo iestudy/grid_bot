@@ -45,8 +45,8 @@ def test_update_base_price_moves_halfway_by_default():
 def test_envelope_clamp():
     cfg = GridEnvelopeConfig()
     assert apply_envelope_clamp(0.3, cfg) == cfg.grid_width_min_jpy
-    assert apply_envelope_clamp(0.9, cfg) == cfg.grid_width_max_jpy
-    assert apply_envelope_clamp(0.5, cfg) == 0.5
+    assert apply_envelope_clamp(1.5, cfg) == cfg.grid_width_max_jpy
+    assert apply_envelope_clamp(0.8, cfg) == 0.8
 
 
 def test_generate_grid_includes_amount():
@@ -83,3 +83,78 @@ def test_required_sell_side_xrp_within_holdings():
     assert required_xrp <= held_xrp, (
         f"売りグリッドに必要な{required_xrp}XRPが保有量{held_xrp}XRPを超えています"
     )
+
+
+def test_synthetic_position_matches_naive_pnl_calc():
+    from src.grid_engine import synthetic_position_from_portfolio
+
+    # 買い100円x10、売り105円x10のラウンドトリップ後を模擬
+    cash_flow = -1000.0 + 1050.0  # -買い支払 + 売り受取 = 50円の実現益、在庫はゼロに戻る想定
+    net_inventory = 10.0 - 10.0  # 0
+    pos = synthetic_position_from_portfolio(cash_flow, net_inventory)
+    assert pos is None  # 在庫ゼロならポジションなし
+
+
+def test_synthetic_position_reproduces_backtest_pnl_formula():
+    from src.grid_engine import synthetic_position_from_portfolio
+    from src.hard_stop_loss import HardStopLossManager
+    from src.config import HardStopLossConfig
+
+    # 買い100円x10のみ、まだ売っていない状態
+    cash_flow = -1000.0
+    net_inventory = 10.0
+    current_price = 95.0  # 含み損が出ている状況
+
+    pos = synthetic_position_from_portfolio(cash_flow, net_inventory)
+    assert pos is not None
+    assert pos.side == "buy"
+    assert pos.price == pytest.approx(100.0)  # cost_price = -(-1000)/10 = 100
+    assert pos.amount == pytest.approx(10.0)
+
+    # HardStopLossManager経由の評価値が、素朴な計算(cash_flow + net_inventory*current_price)と一致するか
+    cfg = HardStopLossConfig(total_capital_jpy=10_000.0, max_price_deviation_jpy=1000.0)
+    manager = HardStopLossManager(cfg, base_price=100.0)
+    result = manager.evaluate(current_price=current_price, positions=[pos])
+    expected_pnl = cash_flow + net_inventory * current_price  # -1000 + 10*95 = -50
+    assert result.unrealized_pnl_jpy == pytest.approx(expected_pnl)
+
+
+def test_should_update_base_price_bidirectional_triggers_on_buy_grid_empty():
+    from src.grid_engine import should_update_base_price_bidirectional
+
+    cfg = GridEnvelopeConfig()
+    # 買いグリッドが0本(上昇トレンドで価格がbase_priceを上抜けたケース)
+    state = DriftState(base_price=159.61, last_fill_timestamp=0.0, open_sell_count=4, open_buy_count=0)
+    now = cfg.no_fill_minutes_threshold * 60 + 1
+    result = should_update_base_price_bidirectional(state, market_price=162.5, now_timestamp=now, cfg=cfg)
+    assert result is True
+
+
+def test_should_update_base_price_bidirectional_triggers_on_sell_grid_empty():
+    from src.grid_engine import should_update_base_price_bidirectional
+
+    cfg = GridEnvelopeConfig()
+    state = DriftState(base_price=159.61, last_fill_timestamp=0.0, open_sell_count=0, open_buy_count=4)
+    now = cfg.no_fill_minutes_threshold * 60 + 1
+    result = should_update_base_price_bidirectional(state, market_price=157.5, now_timestamp=now, cfg=cfg)
+    assert result is True
+
+
+def test_should_update_base_price_bidirectional_false_when_both_sides_have_orders():
+    from src.grid_engine import should_update_base_price_bidirectional
+
+    cfg = GridEnvelopeConfig()
+    state = DriftState(base_price=159.61, last_fill_timestamp=0.0, open_sell_count=3, open_buy_count=3)
+    now = cfg.no_fill_minutes_threshold * 60 + 1
+    result = should_update_base_price_bidirectional(state, market_price=162.5, now_timestamp=now, cfg=cfg)
+    assert result is False
+
+
+def test_should_update_base_price_bidirectional_false_when_no_fill_time_not_elapsed():
+    from src.grid_engine import should_update_base_price_bidirectional
+
+    cfg = GridEnvelopeConfig()
+    state = DriftState(base_price=159.61, last_fill_timestamp=0.0, open_sell_count=0, open_buy_count=4)
+    now = 60  # まだ1分しか経っていない
+    result = should_update_base_price_bidirectional(state, market_price=157.5, now_timestamp=now, cfg=cfg)
+    assert result is False

@@ -82,6 +82,29 @@ def required_sell_side_xrp(cfg: GridEnvelopeConfig) -> float:
     return cfg.amount_per_level_xrp * cfg.max_sell_levels
 
 
+def synthetic_position_from_portfolio(cash_flow: float, net_inventory: float, cost_side_hint: str = None):
+    """
+    state_store.PortfolioState(cash_flow, net_inventory)から、
+    HardStopLossManagerがそのまま評価できる単一のPositionを合成する。
+
+    数学的根拠: unrealized_pnl = (price - cost_price) * amount という
+    HardStopLossManagerの計算式に対して、cost_price = -cash_flow / net_inventory
+    と置くと、結果はバックテストのcompute_pnlが返す
+    total_pnl(rebate除く) = cash_flow + net_inventory * current_price
+    と完全に一致する。個々の約定ロットを追跡しなくても、累積した
+    cash_flow/net_inventoryの2値だけで正確な含み損益判定ができる。
+
+    net_inventory == 0 の場合はポジションなしとしてNoneを返す。
+    """
+    from .hard_stop_loss import Position
+
+    if net_inventory == 0:
+        return None
+    cost_price = -cash_flow / net_inventory
+    side = "buy" if net_inventory > 0 else "sell"
+    return Position(side=side, price=cost_price, amount=abs(net_inventory))
+
+
 def should_update_base_price(
     state: DriftState,
     market_price: float,
@@ -104,6 +127,27 @@ def should_update_base_price(
     )
 
 
+def should_update_base_price_bidirectional(
+    state: DriftState,
+    market_price: float,
+    now_timestamp: float,
+    cfg: GridEnvelopeConfig,
+) -> bool:
+    """
+    should_update_base_priceの双方向版。
+    売りグリッド0本(下落トレンドで価格がbase_priceを下抜けたケース)だけでなく、
+    買いグリッド0本(上昇トレンドで価格がbase_priceを上抜けたケース)でも
+    同様にドリフト補正の対象とする。本番のrun_loopではこちらを使用する。
+    """
+    no_fill_minutes = (now_timestamp - state.last_fill_timestamp) / 60.0
+    if no_fill_minutes < cfg.no_fill_minutes_threshold:
+        return False
+    drift = abs(market_price - state.base_price)
+    if drift < cfg.drift_trigger_deviation_jpy:
+        return False
+    return state.open_sell_count == 0 or state.open_buy_count == 0
+
+
 def update_base_price(
     state: DriftState,
     market_price: float,
@@ -124,3 +168,21 @@ def apply_envelope_clamp(
 ) -> float:
     """Tier1自動変更で提案されたgrid幅をenvelope範囲内にクランプする。"""
     return max(cfg.grid_width_min_jpy, min(cfg.grid_width_max_jpy, proposed_width))
+
+
+def detect_trend(reference_price: float, current_price: float, threshold_ratio: float) -> bool:
+    """
+    直近の基準価格(reference_price)から現在価格(current_price)までの変化率が
+    threshold_ratio以上なら「トレンド」と判定する。
+
+    重要: reference_priceは必ず「判定時点より過去」の価格を渡すこと。
+    未来の価格を混ぜると先読みバイアスになり、バックテスト結果が無意味になる。
+
+    これはClaude APIによるレジーム分類の代替として、決定論的・再現可能な
+    バックテスト用に用意した簡易プロキシである。本番のレジーム判定ロジック
+    そのものではない。
+    """
+    if reference_price <= 0:
+        return False
+    change_ratio = abs(current_price - reference_price) / reference_price
+    return change_ratio >= threshold_ratio

@@ -1,0 +1,38 @@
+# /etc/systemd/system/grid_bot.service として配置する。
+#
+# 重要な注意点:
+# - --live --yes を含めると起動と同時に実資金での取引が始まる。
+#   必ず先に --live を外した(dry-run)状態で動作確認してから切り替えること。
+# - EMERGENCY_STOP/FULL_CLOSEが発動した場合、run_loopは正常終了(exit code 0)する。
+#   Restart=on-failureは正常終了時には作動しない設計上の意図的な挙動
+#   (安全装置の発動後に無条件で自動再開させないため)。つまり緊急停止後は
+#   このサービスは「起動していないが異常でもない」状態のまま停止し続ける。
+#   systemctl status で気づける状態にしておくこと(現時点でSlack等への
+#   自動通知は未実装。定期的な手動確認が必要)。
+# - .envはgit管理対象外。scp等で別途このディレクトリに配置すること。
+
+[Unit]
+Description=Grid Trading Bot (bitbank XRP/JPY)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/grid_bot
+EnvironmentFile=/home/ec2-user/grid_bot/.env
+
+# --- 初回は必ずこちらのdry-run版で動作確認すること ---
+ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 -m src.run_loop --pair xrp_jpy --poll-interval 10 --use-dynamodb --use-websocket --max-iterations 0
+
+# --- 動作確認後、本番投入する場合は上のExecStartをコメントアウトし、以下を使う ---
+# ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 -m src.run_loop --pair xrp_jpy --poll-interval 10 --use-dynamodb --use-websocket --max-iterations 0 --live --yes
+
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grid_bot
+
+[Install]
+WantedBy=multi-user.target
