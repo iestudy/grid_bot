@@ -1,6 +1,9 @@
+import pytest
+
 from src.grid_engine import (
     generate_grid, should_update_base_price, update_base_price,
-    apply_envelope_clamp, DriftState,
+    apply_envelope_clamp, DriftState, estimate_total_capital_jpy,
+    required_buy_side_jpy, required_sell_side_xrp,
 )
 from src.config import GridEnvelopeConfig
 
@@ -44,3 +47,39 @@ def test_envelope_clamp():
     assert apply_envelope_clamp(0.3, cfg) == cfg.grid_width_min_jpy
     assert apply_envelope_clamp(0.9, cfg) == cfg.grid_width_max_jpy
     assert apply_envelope_clamp(0.5, cfg) == 0.5
+
+
+def test_generate_grid_includes_amount():
+    cfg = GridEnvelopeConfig()
+    levels = generate_grid(base_price=159.61, cfg=cfg)
+    assert all(l.amount == cfg.amount_per_level_xrp for l in levels)
+
+
+def test_estimate_total_capital_jpy_matches_actual_balance():
+    # 実際のget_assets()結果を簡略化したテストデータ
+    assets = [
+        {"asset": "jpy", "onhand_amount": "8302.3598"},
+        {"asset": "xrp", "onhand_amount": "120.000000"},
+        {"asset": "btc", "onhand_amount": "0.00000000"},
+    ]
+    total = estimate_total_capital_jpy(assets, current_price=159.6)
+    # 8302.36 + 120*159.6 = 8302.36 + 19152 = 27454.36
+    assert total == pytest.approx(27454.36, rel=1e-3)
+
+
+def test_required_buy_side_jpy_within_available_balance():
+    cfg = GridEnvelopeConfig()
+    required_jpy = required_buy_side_jpy(cfg, base_price=159.61)
+    available_jpy = 8302.36  # キャンセル後の自由JPY残高
+    assert required_jpy < available_jpy, (
+        f"買いグリッドに必要な{required_jpy:.2f}円が自由JPY残高{available_jpy}円を超えています"
+    )
+
+
+def test_required_sell_side_xrp_within_holdings():
+    cfg = GridEnvelopeConfig()
+    required_xrp = required_sell_side_xrp(cfg)
+    held_xrp = 120.0
+    assert required_xrp <= held_xrp, (
+        f"売りグリッドに必要な{required_xrp}XRPが保有量{held_xrp}XRPを超えています"
+    )

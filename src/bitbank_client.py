@@ -61,7 +61,7 @@ class BitbankClient:
 
     def _sign_get(self, path: str, query: str = "") -> Dict[str, str]:
         nonce = str(int(time.time() * 1000))
-        message = nonce + path + query
+        message = nonce + "/v1" + path + query
         signature = hmac.new(self.api_secret.encode(), message.encode(), hashlib.sha256).hexdigest()
         return {
             "ACCESS-KEY": self.api_key,

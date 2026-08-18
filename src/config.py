@@ -19,8 +19,11 @@ class HardStopLossConfig:
     partial_close_fraction: float = 0.5
     # base_priceからの乖離がこの絶対値(円)を超えたら緊急停止（グリッド下限/上限の逸脱）
     max_price_deviation_jpy: float = 8.0
-    # 総資金（円）。Paper Trading/本番それぞれで実際の残高に合わせて更新する
-    total_capital_jpy: float = 30_000.0
+    # 総資金（円）。Paper Trading/本番それぞれで実際の残高に合わせて更新する。
+    # 静的な設定値は簡易版であり、本来は毎サイクルget_assets()を呼んで
+    # estimate_total_capital_jpy()（grid_engine.py）で動的に計算するのが望ましい。
+    # 以下はキャンセル後の実残高（JPY自由8,300円 + XRP保有120枚×約159.6円）に基づく初期値。
+    total_capital_jpy: float = 27_450.0
     # --- ここまで聖域 ---
 
 
@@ -37,6 +40,10 @@ class GridEnvelopeConfig:
 
     max_buy_levels: int = 5
     max_sell_levels: int = 5
+
+    # 1レベルあたりの数量(XRP)。実際の保有資産(JPY自由残高・XRP保有量)から逆算した初期値。
+    # 口座残高が変わったら、estimate_total_capital_jpy()の結果を見ながら調整すること。
+    amount_per_level_xrp: float = 8.0
 
     # 24時間の累積ドリフト上限（初期値からの乖離率）。これを超えたら強制的にTier2へ
     cumulative_drift_limit_ratio: float = 0.30

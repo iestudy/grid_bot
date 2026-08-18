@@ -19,6 +19,7 @@ from .config import GridEnvelopeConfig
 class GridLevel:
     side: str        # "buy" or "sell"
     price: float
+    amount: float = 0.0   # このレベルで発注する数量(XRP)
 
 
 @dataclass
@@ -33,10 +34,52 @@ def generate_grid(base_price: float, cfg: GridEnvelopeConfig) -> List[GridLevel]
     levels: List[GridLevel] = []
     width = cfg.grid_width_default_jpy
     for i in range(1, cfg.max_buy_levels + 1):
-        levels.append(GridLevel(side="buy", price=round(base_price - width * i, 4)))
+        levels.append(GridLevel(
+            side="buy",
+            price=round(base_price - width * i, 4),
+            amount=cfg.amount_per_level_xrp,
+        ))
     for i in range(1, cfg.max_sell_levels + 1):
-        levels.append(GridLevel(side="sell", price=round(base_price + width * i, 4)))
+        levels.append(GridLevel(
+            side="sell",
+            price=round(base_price + width * i, 4),
+            amount=cfg.amount_per_level_xrp,
+        ))
     return levels
+
+
+def estimate_total_capital_jpy(assets: list, current_price: float) -> float:
+    """
+    bitbank get_assets() の 'assets' リストから総資金(円換算)を計算する。
+    onhand_amount（locked含む）を使う。ロック中の資金も自分の資産であり、
+    ストップロス判定の母数からは除外すべきではないため。
+
+    使用例:
+        data = client.get_assets()
+        total = estimate_total_capital_jpy(data["assets"], current_price=159.6)
+    """
+    total = 0.0
+    for a in assets:
+        if a["asset"] == "jpy":
+            total += float(a["onhand_amount"])
+        elif a["asset"] == "xrp":
+            total += float(a["onhand_amount"]) * current_price
+    return total
+
+
+def required_buy_side_jpy(cfg: GridEnvelopeConfig, base_price: float) -> float:
+    """買いグリッド全レベルを約定させるために必要なJPY総額（発注時の目安）。"""
+    width = cfg.grid_width_default_jpy
+    total = 0.0
+    for i in range(1, cfg.max_buy_levels + 1):
+        price = base_price - width * i
+        total += price * cfg.amount_per_level_xrp
+    return total
+
+
+def required_sell_side_xrp(cfg: GridEnvelopeConfig) -> float:
+    """売りグリッド全レベル分に必要なXRP総量。"""
+    return cfg.amount_per_level_xrp * cfg.max_sell_levels
 
 
 def should_update_base_price(
