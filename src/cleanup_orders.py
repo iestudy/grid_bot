@@ -17,18 +17,24 @@ import time
 import requests
 from dotenv import load_dotenv
 
-from .bitbank_client import BitbankClient
+from .bitbank_client import BitbankClient, BitbankAPIError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# bitbankの一時的なエラーコード(要求自体は無効ではなく、時間を置けば成功しうるもの)
+#   70011: システムが混雑しています。しばらくしてから再度お試しください
+#   70013: システム負荷上昇のため、注文および注文キャンセルを一時的に制限中
+#   70019: 注文はキャンセル中です(直前のキャンセル要求がまだ処理中)
+RETRYABLE_BITBANK_CODES = {70011, 70013, 70019}
+
 
 def _is_rate_limit_error(e: Exception) -> bool:
-    return (
-        isinstance(e, requests.exceptions.HTTPError)
-        and e.response is not None
-        and e.response.status_code == 429
-    )
+    if isinstance(e, requests.exceptions.HTTPError) and e.response is not None and e.response.status_code == 429:
+        return True
+    if isinstance(e, BitbankAPIError) and e.code in RETRYABLE_BITBANK_CODES:
+        return True
+    return False
 
 
 def cancel_order_with_retry(

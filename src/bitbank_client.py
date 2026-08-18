@@ -26,7 +26,9 @@ import requests
 
 
 class BitbankAPIError(Exception):
-    pass
+    def __init__(self, message: str, code: int = None):
+        super().__init__(message)
+        self.code = code
 
 
 class BitbankClient:
@@ -185,5 +187,6 @@ class BitbankClient:
         r.raise_for_status()
         data = r.json()
         if data.get("success") != 1:
-            raise BitbankAPIError(f"bitbank API error: {data}")
+            code = data.get("data", {}).get("code") if isinstance(data.get("data"), dict) else None
+            raise BitbankAPIError(f"bitbank API error: {data}", code=code)
         return data.get("data", {})

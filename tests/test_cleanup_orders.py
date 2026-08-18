@@ -100,3 +100,33 @@ def test_cancel_all_orders_without_store_does_not_crash():
     result = cancel_all_orders(client, "xrp_jpy", store=None, throttle_sec=0.0)
 
     assert result["succeeded"] == [111]
+
+
+def test_cancel_order_with_retry_retries_on_bitbank_transient_error_code():
+    from src.bitbank_client import BitbankAPIError
+    from src.cleanup_orders import cancel_order_with_retry
+
+    client = make_mock_client()
+    transient_error = BitbankAPIError("bitbank API error: {'success': 0, 'data': {'code': 70019}}", code=70019)
+    client.cancel_order.side_effect = [transient_error, {"status": "CANCELED_UNFILLED"}]
+
+    result = cancel_order_with_retry(client, "xrp_jpy", 123, backoff_base_sec=0.01)
+
+    assert result is True
+    assert client.cancel_order.call_count == 2
+
+
+def test_cancel_order_with_retry_does_not_retry_non_transient_bitbank_error():
+    from src.bitbank_client import BitbankAPIError
+    from src.cleanup_orders import cancel_order_with_retry
+
+    client = make_mock_client()
+    # 70001はRETRYABLE_BITBANK_CODESに含まれない(システムエラー、リトライしても
+    # 解決しない可能性が高いもの)想定
+    fatal_error = BitbankAPIError("bitbank API error: {'success': 0, 'data': {'code': 70001}}", code=70001)
+    client.cancel_order.side_effect = fatal_error
+
+    result = cancel_order_with_retry(client, "xrp_jpy", 123, backoff_base_sec=0.01)
+
+    assert result is False
+    assert client.cancel_order.call_count == 1
