@@ -1,0 +1,53 @@
+# 週次バックテストジョブ（Tier1自動パラメータ調整パイプラインの土台）
+#
+# 現時点では「バックテストを実行してSlackに結果を通知する」ところまでの雛形。
+# Tier1自動マージ（envelope内パラメータのPR自動作成・自動マージ）は
+# HardStopLossManagerの実運用実績が十分に積み上がってから有効化すること。
+# 現段階でこのジョブに自動マージ権限は付与しない。
+
+name: weekly-backtest
+
+on:
+  schedule:
+    - cron: "0 20 * * 0"  # 毎週日曜 20:00 UTC (日本時間 月曜 05:00頃)
+  workflow_dispatch: {}    # 手動実行も可能にしておく
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests (HardStopLossManagerは必ず先に通す)
+        run: pytest tests/ -v
+
+      - name: Download historical ticks from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws s3 cp s3://your-bucket-name/ticks/latest.csv ./data/latest.csv
+          # 実際のバケット名・パスは運用開始後に置き換える
+
+      - name: Run backtest
+        run: python -m src.paper_trading --pair xrp_jpy --ticks-csv ./data/latest.csv
+
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          echo "TODO: バックテスト結果をSlackへ整形して通知するスクリプトをここに実装"
+          # curl -X POST -H 'Content-type: application/json' \
+          #   --data '{"text":"週次バックテスト結果: ..."}' \
+          #   "$SLACK_WEBHOOK_URL"
+
+      # --- Tier1自動PR作成・自動マージは、運用実績を積んでから以下を有効化 ---
+      # - name: Create parameter-update PR if improvement found
+      #   run: echo "TODO"
