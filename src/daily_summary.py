@@ -53,6 +53,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-dynamodb", action="store_true")
     args = parser.parse_args()
 
+    from dotenv import load_dotenv
+    load_dotenv()
+
     store = DynamoDBStateStore() if args.use_dynamodb else InMemoryStateStore()
     if not args.use_dynamodb:
         logger.warning("InMemoryStateStoreを使用しています。run_loopと別プロセスの場合、常に差分ゼロになります。")

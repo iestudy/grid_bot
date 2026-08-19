@@ -45,3 +45,19 @@ def test_send_daily_summary_with_no_prior_snapshot_treats_all_as_today():
     args, kwargs = notifier.notify_daily_summary.call_args
     assert args[1] == pytest.approx(100.0)
     assert args[2] == 4
+
+
+def test_main_block_calls_load_dotenv():
+    """
+    daily_summary.pyの__main__ブロックがload_dotenv()を呼んでいることを
+    ソースコードレベルで確認する回帰テスト。
+    (env変数読み込み漏れにより、cron実行時にSLACK_WEBHOOK_URL等が
+     読み込まれない事故が過去にあったため)
+    """
+    import inspect
+    import src.daily_summary as module
+
+    source = inspect.getsource(module)
+    main_block_start = source.index('if __name__ == "__main__":')
+    main_block = source[main_block_start:]
+    assert "load_dotenv()" in main_block
