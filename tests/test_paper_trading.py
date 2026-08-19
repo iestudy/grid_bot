@@ -217,3 +217,21 @@ def test_parameter_sweep_returns_sorted_results():
     # 降順ソートされていることを確認
     pnls = [r["total_pnl_jpy"] for r in results]
     assert pnls == sorted(pnls, reverse=True)
+
+
+def test_sweep_grid_width_only_returns_sorted_results():
+    from src.paper_trading import sweep_grid_width_only, Trade
+    from src.config import GridEnvelopeConfig
+
+    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=8.0)
+    trades = [
+        Trade(timestamp=float(i), side="sell" if i % 2 == 0 else "buy", price=100.0 - i * 0.05, amount=50.0)
+        for i in range(200)
+    ]
+
+    results = sweep_grid_width_only(base_price=100.0, base_cfg=cfg, trades_list=trades, widths=[0.3, 0.5, 0.8])
+
+    assert len(results) == 3
+    pnls = [r["total_pnl_jpy"] for r in results]
+    assert pnls == sorted(pnls, reverse=True)
+    assert {r["width"] for r in results} == {0.3, 0.5, 0.8}

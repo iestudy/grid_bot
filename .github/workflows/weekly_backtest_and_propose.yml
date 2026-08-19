@@ -1,0 +1,74 @@
+# 週次バックテスト & Tier1パラメータ提案パイプライン
+#
+# 重要: このワークフローはPRを自動作成するが、自動マージは一切行わない。
+# 実運用実績がまだ十分に蓄積していないため、意図的にTier1自動マージを
+# 無効化している。改善が見つかった場合でも、必ず人間がPRの内容を確認し、
+# 手動でマージすること。
+#
+# 対象パラメータはgrid_widthのみ(Walk-Forward検証で信頼性が実証済みのため)。
+# レジームフィルタ等、過学習と判明したパラメータは自動化対象に含めない。
+#
+# 事前準備:
+#   リポジトリの Settings > Actions > General > Workflow permissions で
+#   "Read and write permissions" を有効にしておくこと
+#   (デフォルトはread-onlyで、PR作成に失敗する)
+
+name: weekly-backtest-and-propose
+
+on:
+  schedule:
+    - cron: "0 20 * * 0"  # 毎週日曜 20:00 UTC (日本時間 月曜 05:00頃)
+  workflow_dispatch: {}    # 手動実行も可能にしておく(動作確認用)
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests (HardStopLossManagerを含む全テストが通ることを確認)
+        run: pytest tests/ -v
+
+  backtest-and-propose:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch recent historical data (bitbank Public API、認証不要)
+        run: python3 -m src.data_fetch --pair xrp_jpy --days 14 --out data/weekly_trades.csv
+
+      - name: Run grid_width sweep and propose config change if warranted
+        id: propose
+        run: python3 -m src.propose_params --trades-csv data/weekly_trades.csv
+
+      - name: Create Pull Request (Tier1候補、自動マージはしない)
+        if: steps.propose.outputs.proposal_needed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(params): 週次バックテストによるgrid_width調整提案"
+          branch: auto/weekly-param-proposal
+          delete-branch: true
+          title: "[Tier1候補] grid_width調整の提案（週次バックテスト自動生成）"
+          body-path: PR_BODY.md
+          labels: |
+            tier1-candidate
+            needs-human-review

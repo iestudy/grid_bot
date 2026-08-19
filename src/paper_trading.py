@@ -270,6 +270,41 @@ def run_simulation_with_stop_loss(
     return fills, stop_events, halted
 
 
+def sweep_grid_width_only(
+    base_price: float,
+    base_cfg,  # GridEnvelopeConfig
+    trades_list: List[Trade],
+    widths: List[float],
+) -> List[dict]:
+    """
+    grid_widthのみを対象にした軽量スイープ。
+
+    Walk-Forward検証の結果、レジームフィルタ(trend_window/threshold)は
+    過学習と判明し不採用となった一方、grid_widthの調整だけは訓練・検証
+    両期間で一貫して効果が確認された。そのため、GitHub Actionsでの
+    自動パラメータ提案(Tier1候補)は、信頼性が実証されているgrid_widthの
+    みを対象とし、まだ信頼していないパラメータを自動化対象に含めない。
+    """
+    import dataclasses
+
+    results = []
+    final_price = trades_list[-1].price if trades_list else base_price
+
+    for width in widths:
+        cfg = dataclasses.replace(base_cfg, grid_width_default_jpy=width)
+        fills = run_simulation_with_replenishment(base_price, cfg, iter(trades_list))
+        pnl = compute_pnl(fills, final_price)
+        results.append({
+            "width": width,
+            "total_pnl_jpy": pnl["total_pnl_jpy"],
+            "net_inventory_xrp": pnl["net_inventory_xrp"],
+            "fills": len(fills),
+        })
+
+    results.sort(key=lambda r: r["total_pnl_jpy"], reverse=True)
+    return results
+
+
 def run_parameter_sweep(
     base_price: float,
     base_cfg,  # GridEnvelopeConfig
