@@ -169,6 +169,11 @@ def run_loop(
                 drift_state.last_fill_timestamp = now
                 manager.base_price = new_base_price
                 desired_levels = generate_grid(new_base_price, GRID_ENVELOPE)
+                if not dry_run:
+                    try:
+                        store.save_base_price(new_base_price)
+                    except Exception as e:
+                        logger.warning(f"base_price永続化に失敗(次回再起動時は今回のドリフト前の値から再開されます): {e}")
 
             try:
                 placed = sync_grid_orders(client, store, pair, desired_levels, dry_run=dry_run)
@@ -234,9 +239,25 @@ def main():
         store = InMemoryStateStore()
 
     if args.base_price is None:
-        ticker = client.get_ticker(args.pair)["data"]
-        args.base_price = float(ticker["last"])
-        logger.info(f"base_price未指定のため現在価格を使用: {args.base_price}")
+        # 永続ストア(DynamoDB)に前回のbase_priceが残っていれば、それを優先して
+        # 再利用する。ここで毎回「現在価格」を新規base_priceにしてしまうと、
+        # サービス再起動のたびに全く別のグリッドが発注され、既存の未約定注文が
+        # キャンセルされないまま取引所に残り続ける事故につながる
+        # (実際に過去、再起動を繰り返して21本の孤立した注文が残った事例がある)。
+        persisted_base_price = None
+        if args.use_dynamodb and args.live:
+            persisted_base_price = store.get_base_price()
+
+        if persisted_base_price is not None:
+            args.base_price = persisted_base_price
+            logger.info(f"base_price未指定のため、DynamoDBに永続化されていた前回値を使用: {args.base_price}")
+        else:
+            ticker = client.get_ticker(args.pair)["data"]
+            args.base_price = float(ticker["last"])
+            logger.info(f"base_price未指定・永続化データなしのため現在価格を使用: {args.base_price}")
+
+    if args.live and args.use_dynamodb:
+        store.save_base_price(args.base_price)
 
     run_loop(
         client=client, store=store, pair=args.pair, base_price=args.base_price,

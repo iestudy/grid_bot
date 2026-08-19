@@ -263,3 +263,53 @@ def test_run_loop_notifies_emergency_on_stop():
         )
 
     mock_notifier.notify_emergency.assert_called_once()
+
+
+def test_run_loop_persists_base_price_on_drift_update():
+    """
+    ドリフト補正でbase_priceが更新された際、store側にも永続化されることを確認する。
+    これは再起動時に古いbase_priceで新たなグリッドを重複発注する事故を防ぐための機構。
+    reconcile_orders/sync_grid_ordersはモックし、ドリフト永続化ロジックのみを検証する。
+    """
+    from unittest.mock import patch
+    from src.state_store import InMemoryStateStore, OrderRecord, OrderState
+    from src.order_manager import ReconcileResult
+
+    client = make_mock_client(last_price=161.5)  # drift閾値は超えるが緊急停止閾値は超えない
+    store = InMemoryStateStore()
+    # 売り側が0本、買い側だけ4本OPENの状態を直接作る(ドリフト条件を満たす状況)
+    for i in range(4):
+        store.save_order(OrderRecord(
+            request_id=f"buy{i}", pair="xrp_jpy", side="buy", price=155.0 + i,
+            amount=8.0, state=OrderState.OPEN, exchange_order_id=str(i),
+        ))
+
+    import src.run_loop as run_loop_module
+    real_time = run_loop_module.time.time
+    real_sleep = run_loop_module.time.sleep
+    fake_now = {"t": real_time()}
+
+    def fake_time():
+        return fake_now["t"]
+
+    def fake_sleep(_):
+        fake_now["t"] += 130 * 60
+
+    run_loop_module.time.time = fake_time
+    run_loop_module.time.sleep = fake_sleep
+
+    try:
+        with patch("src.run_loop.reconcile_orders") as mock_reconcile, \
+             patch("src.run_loop.sync_grid_orders", return_value=0):
+            mock_reconcile.return_value = ReconcileResult(newly_filled=[], still_open_count=4)
+            run_loop(
+                client=client, store=store, pair="xrp_jpy", base_price=159.61,
+                poll_interval_sec=0, max_iterations=2, dry_run=False,
+            )
+    finally:
+        run_loop_module.time.time = real_time
+        run_loop_module.time.sleep = real_sleep
+
+    persisted = store.get_base_price()
+    assert persisted is not None
+    assert persisted != 159.61  # 更新後の値に変わっているはず

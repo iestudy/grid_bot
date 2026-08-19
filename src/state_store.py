@@ -95,6 +95,12 @@ class StateStore(ABC):
     @abstractmethod
     def save_daily_snapshot(self, snapshot: DailySnapshot) -> None: ...
 
+    @abstractmethod
+    def get_base_price(self) -> Optional[float]: ...
+
+    @abstractmethod
+    def save_base_price(self, base_price: float) -> None: ...
+
     def new_request_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -105,6 +111,7 @@ class InMemoryStateStore(StateStore):
         self._portfolio_state = PortfolioState()
         self._ledger_data: Optional[dict] = None
         self._daily_snapshot = DailySnapshot()
+        self._base_price: Optional[float] = None
 
     def save_order(self, record: OrderRecord) -> None:
         self._orders[record.request_id] = record
@@ -143,6 +150,12 @@ class InMemoryStateStore(StateStore):
 
     def save_daily_snapshot(self, snapshot: DailySnapshot) -> None:
         self._daily_snapshot = snapshot
+
+    def get_base_price(self) -> Optional[float]:
+        return self._base_price
+
+    def save_base_price(self, base_price: float) -> None:
+        self._base_price = base_price
 
 
 class DynamoDBStateStore(StateStore):
@@ -185,7 +198,7 @@ class DynamoDBStateStore(StateStore):
 
     # 通常の注文レコード以外に、このテーブルへ同居させている特殊レコードのキー。
     # list_open_ordersのscanから必ず除外すること(stateキーを持たないため)。
-    _SENTINEL_KEYS = {"__PORTFOLIO_STATE__", "__POSITION_LEDGER__", "__DAILY_SNAPSHOT__"}
+    _SENTINEL_KEYS = {"__PORTFOLIO_STATE__", "__POSITION_LEDGER__", "__DAILY_SNAPSHOT__", "__BASE_PRICE__"}
 
     def list_open_orders(self) -> Dict[str, OrderRecord]:
         # 件数が少ない前提（3万円運用のgrid本数は数本〜十数本）でscanを許容。
@@ -277,4 +290,17 @@ class DynamoDBStateStore(StateStore):
             "realized_profit_jpy": str(snapshot.realized_profit_jpy),
             "total_fill_count": str(snapshot.total_fill_count),
             "timestamp": str(snapshot.timestamp),
+        })
+
+    def get_base_price(self) -> Optional[float]:
+        resp = self._table.get_item(Key={"request_id": "__BASE_PRICE__"})
+        item = resp.get("Item")
+        if item is None:
+            return None
+        return float(item["base_price"])
+
+    def save_base_price(self, base_price: float) -> None:
+        self._table.put_item(Item={
+            "request_id": "__BASE_PRICE__",
+            "base_price": str(base_price),
         })
