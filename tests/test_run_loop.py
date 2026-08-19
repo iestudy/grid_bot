@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.run_loop import run_loop
 from src.state_store import InMemoryStateStore
 
@@ -191,3 +193,73 @@ def test_run_loop_disconnects_websocket_feed_on_normal_completion():
     mock_feed_instance.disconnect.assert_called_once()
     # WebSocket価格が使われているため、get_tickerは呼ばれないはず
     client.get_ticker.assert_not_called()
+
+
+def test_run_loop_notifies_round_trip_on_matched_fill():
+    """
+    買い→売りの往復が成立した際にSlack通知が呼ばれ、
+    portfolio.realized_profit_jpyが正しく積算されることを確認する。
+    """
+    from unittest.mock import patch, MagicMock
+    from src.state_store import InMemoryStateStore
+    from src.order_manager import ReconcileResult
+    from src.state_store import OrderRecord, OrderState
+
+    client = make_mock_client(last_price=159.61)
+    store = InMemoryStateStore()
+
+    # 1回目のreconcileで買い約定、2回目で売り約定を返すよう仕込む
+    buy_fill = OrderRecord(
+        request_id="r1", pair="xrp_jpy", side="buy", price=100.0, amount=8.0,
+        state=OrderState.FILLED, exchange_order_id="1",
+    )
+    sell_fill = OrderRecord(
+        request_id="r2", pair="xrp_jpy", side="sell", price=102.0, amount=8.0,
+        state=OrderState.FILLED, exchange_order_id="2",
+    )
+
+    call_count = {"n": 0}
+
+    def fake_reconcile(client_, store_, pair_):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return ReconcileResult(newly_filled=[buy_fill], still_open_count=0)
+        elif call_count["n"] == 2:
+            return ReconcileResult(newly_filled=[sell_fill], still_open_count=0)
+        return ReconcileResult(newly_filled=[], still_open_count=0)
+
+    mock_notifier = MagicMock()
+
+    with patch("src.run_loop.reconcile_orders", side_effect=fake_reconcile), \
+         patch("src.run_loop.SlackNotifier", return_value=mock_notifier):
+        run_loop(
+            client=client, store=store, pair="xrp_jpy", base_price=159.61,
+            poll_interval_sec=0, max_iterations=2, dry_run=False,
+        )
+
+    mock_notifier.notify_round_trip.assert_called_once()
+    call_args = mock_notifier.notify_round_trip.call_args[0]
+    assert call_args[0] == 100.0  # buy_price
+    assert call_args[1] == 102.0  # sell_price
+    assert call_args[3] == pytest.approx(16.0)  # profit_jpy
+
+    portfolio = store.get_portfolio_state()
+    assert portfolio.realized_profit_jpy == pytest.approx(16.0)
+    assert portfolio.total_fill_count == 2
+
+
+def test_run_loop_notifies_emergency_on_stop():
+    from unittest.mock import patch, MagicMock
+    from src.state_store import InMemoryStateStore
+
+    client = make_mock_client(last_price=50.0)  # base_priceから大きく乖離させて緊急停止を誘発
+    store = InMemoryStateStore()
+    mock_notifier = MagicMock()
+
+    with patch("src.run_loop.SlackNotifier", return_value=mock_notifier):
+        run_loop(
+            client=client, store=store, pair="xrp_jpy", base_price=159.61,
+            poll_interval_sec=0, max_iterations=5, dry_run=False,
+        )
+
+    mock_notifier.notify_emergency.assert_called_once()

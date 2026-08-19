@@ -43,13 +43,25 @@ class PortfolioState:
     バックテストのcompute_pnlと数学的に同一の会計方式で運用中のポジションを追跡する。
       cash_flow: 買いで支払った額をマイナス、売りで受け取った額をプラスとして積算
       net_inventory: 買い数量合計 - 売り数量合計（プラスなら在庫超過、マイナスなら在庫不足）
+      realized_profit_jpy: PositionLedgerのFIFOマッチングで確定した往復益の累積
+      total_fill_count: 累積約定件数(往復ではなく個々の約定単位でのカウント)
 
-    この2つの値から、任意の時点の含み損益は
+    この2つの値(cash_flow, net_inventory)から、任意の時点の含み損益は
       unrealized_pnl = cash_flow + net_inventory * current_price
     で計算できる（グリッドのメイカーリベートは別途加算）。
     """
     cash_flow: float = 0.0
     net_inventory: float = 0.0
+    realized_profit_jpy: float = 0.0
+    total_fill_count: int = 0
+
+
+@dataclass
+class DailySnapshot:
+    """日次サマリー通知用の前回スナップショット。"""
+    realized_profit_jpy: float = 0.0
+    total_fill_count: int = 0
+    timestamp: float = 0.0
 
 
 class StateStore(ABC):
@@ -71,6 +83,18 @@ class StateStore(ABC):
     @abstractmethod
     def save_portfolio_state(self, state: PortfolioState) -> None: ...
 
+    @abstractmethod
+    def get_position_ledger_data(self) -> Optional[dict]: ...
+
+    @abstractmethod
+    def save_position_ledger_data(self, data: dict) -> None: ...
+
+    @abstractmethod
+    def get_daily_snapshot(self) -> DailySnapshot: ...
+
+    @abstractmethod
+    def save_daily_snapshot(self, snapshot: DailySnapshot) -> None: ...
+
     def new_request_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -79,6 +103,8 @@ class InMemoryStateStore(StateStore):
     def __init__(self):
         self._orders: Dict[str, OrderRecord] = {}
         self._portfolio_state = PortfolioState()
+        self._ledger_data: Optional[dict] = None
+        self._daily_snapshot = DailySnapshot()
 
     def save_order(self, record: OrderRecord) -> None:
         self._orders[record.request_id] = record
@@ -105,6 +131,18 @@ class InMemoryStateStore(StateStore):
 
     def save_portfolio_state(self, state: PortfolioState) -> None:
         self._portfolio_state = state
+
+    def get_position_ledger_data(self) -> Optional[dict]:
+        return self._ledger_data
+
+    def save_position_ledger_data(self, data: dict) -> None:
+        self._ledger_data = data
+
+    def get_daily_snapshot(self) -> DailySnapshot:
+        return self._daily_snapshot
+
+    def save_daily_snapshot(self, snapshot: DailySnapshot) -> None:
+        self._daily_snapshot = snapshot
 
 
 class DynamoDBStateStore(StateStore):
@@ -145,14 +183,18 @@ class DynamoDBStateStore(StateStore):
             exchange_order_id=item.get("exchange_order_id") or None,
         )
 
+    # 通常の注文レコード以外に、このテーブルへ同居させている特殊レコードのキー。
+    # list_open_ordersのscanから必ず除外すること(stateキーを持たないため)。
+    _SENTINEL_KEYS = {"__PORTFOLIO_STATE__", "__POSITION_LEDGER__", "__DAILY_SNAPSHOT__"}
+
     def list_open_orders(self) -> Dict[str, OrderRecord]:
         # 件数が少ない前提（3万円運用のgrid本数は数本〜十数本）でscanを許容。
         # 件数が増える場合はGSI（state, updated_at等）を追加してqueryに切り替えること。
         resp = self._table.scan()
         result = {}
         for item in resp.get("Items", []):
-            if item.get("request_id") == "__PORTFOLIO_STATE__":
-                continue  # ポートフォリオ状態レコードはstateキーを持たないため除外
+            if item.get("request_id") in self._SENTINEL_KEYS:
+                continue  # 特殊レコードはstateキーを持たないため除外
             state = OrderState(item["state"])
             if state in (OrderState.PENDING, OrderState.OPEN):
                 result[item["request_id"]] = OrderRecord(
@@ -188,6 +230,8 @@ class DynamoDBStateStore(StateStore):
         return PortfolioState(
             cash_flow=float(item["cash_flow"]),
             net_inventory=float(item["net_inventory"]),
+            realized_profit_jpy=float(item.get("realized_profit_jpy", "0")),
+            total_fill_count=int(item.get("total_fill_count", "0")),
         )
 
     def save_portfolio_state(self, state: PortfolioState) -> None:
@@ -197,4 +241,40 @@ class DynamoDBStateStore(StateStore):
             "request_id": "__PORTFOLIO_STATE__",
             "cash_flow": str(state.cash_flow),
             "net_inventory": str(state.net_inventory),
+            "realized_profit_jpy": str(state.realized_profit_jpy),
+            "total_fill_count": str(state.total_fill_count),
+        })
+
+    def get_position_ledger_data(self) -> Optional[dict]:
+        resp = self._table.get_item(Key={"request_id": "__POSITION_LEDGER__"})
+        item = resp.get("Item")
+        if item is None:
+            return None
+        import json
+        return json.loads(item["ledger_json"])
+
+    def save_position_ledger_data(self, data: dict) -> None:
+        import json
+        self._table.put_item(Item={
+            "request_id": "__POSITION_LEDGER__",
+            "ledger_json": json.dumps(data),
+        })
+
+    def get_daily_snapshot(self) -> DailySnapshot:
+        resp = self._table.get_item(Key={"request_id": "__DAILY_SNAPSHOT__"})
+        item = resp.get("Item")
+        if item is None:
+            return DailySnapshot()
+        return DailySnapshot(
+            realized_profit_jpy=float(item["realized_profit_jpy"]),
+            total_fill_count=int(item["total_fill_count"]),
+            timestamp=float(item["timestamp"]),
+        )
+
+    def save_daily_snapshot(self, snapshot: DailySnapshot) -> None:
+        self._table.put_item(Item={
+            "request_id": "__DAILY_SNAPSHOT__",
+            "realized_profit_jpy": str(snapshot.realized_profit_jpy),
+            "total_fill_count": str(snapshot.total_fill_count),
+            "timestamp": str(snapshot.timestamp),
         })

@@ -30,6 +30,8 @@ from .grid_engine import (
 )
 from .hard_stop_loss import HardStopLossManager, Action
 from .order_manager import reconcile_orders, apply_hard_stop_loss, sync_grid_orders
+from .position_ledger import PositionLedger
+from .notifications import SlackNotifier
 from .config import GRID_ENVELOPE, HARD_STOP_LOSS
 
 logging.basicConfig(
@@ -71,6 +73,9 @@ def run_loop(
         base_price=base_price, last_fill_timestamp=time.time(),
         open_sell_count=0, open_buy_count=0,
     )
+    notifier = SlackNotifier()
+    ledger_data = store.get_position_ledger_data()
+    ledger = PositionLedger.from_dict(ledger_data) if ledger_data else PositionLedger()
 
     mode_label = "DRY RUN（実発注なし）" if dry_run else "LIVE（実資金が動きます）"
     logger.info(f"ループ開始: mode={mode_label} pair={pair} base_price={base_price} max_iterations={max_iterations}")
@@ -105,6 +110,22 @@ def run_loop(
                     logger.info(f"リコンサイル結果: 新規約定={len(reconcile_result.newly_filled)}件 未約定残={reconcile_result.still_open_count}件")
                     if reconcile_result.newly_filled:
                         drift_state.last_fill_timestamp = time.time()
+
+                        portfolio_for_ledger = store.get_portfolio_state()
+                        for filled_record in reconcile_result.newly_filled:
+                            round_trips = ledger.process_fill(
+                                filled_record.side, filled_record.price, filled_record.amount,
+                            )
+                            portfolio_for_ledger.total_fill_count += 1
+                            for rt in round_trips:
+                                portfolio_for_ledger.realized_profit_jpy += rt.profit_jpy
+                                logger.info(
+                                    f"往復決済成立: 買い{rt.buy_price}円 -> 売り{rt.sell_price}円 "
+                                    f"{rt.amount}XRP 損益={rt.profit_jpy:+.2f}円"
+                                )
+                                notifier.notify_round_trip(rt.buy_price, rt.sell_price, rt.amount, rt.profit_jpy)
+                        store.save_portfolio_state(portfolio_for_ledger)
+                        store.save_position_ledger_data(ledger.to_dict())
                 except Exception as e:
                     logger.error(f"リコンサイル失敗: {e}")
                     time.sleep(poll_interval_sec)
@@ -127,6 +148,9 @@ def run_loop(
 
             if action in (Action.FULL_CLOSE, Action.EMERGENCY_STOP):
                 logger.critical(f"{action}が発動しました。ループを終了します。人間のレビューが必要です。")
+                portfolio_snapshot = store.get_portfolio_state()
+                unrealized = portfolio_snapshot.cash_flow + portfolio_snapshot.net_inventory * current_price
+                notifier.notify_emergency(action.value, current_price, unrealized)
                 break
 
             # --- base_price自動ドリフト補正 ---
