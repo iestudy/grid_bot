@@ -147,25 +147,33 @@ class BitbankClient:
     def create_order(
         self,
         pair: str,
-        price: float,
         amount: float,
         side: str,
+        price: float = None,
         order_type: str = "limit",
         post_only: bool = True,
     ) -> Dict[str, Any]:
         """
         post_only=True の場合、メイカー確定できない価格では約定拒否される
         （成行化を避けるため、呼び出し側でBest Bid/Askから1tick離した価格を渡すこと）。
+
+        order_type="market" の場合、priceは指定不要(指定しても無視されるべきだが、
+        bitbank APIの実装依存を避けるため、成行時はリクエストボディにpriceを含めない)。
+        limit注文ではpriceが必須。
         """
         self._require_credentials()
+        if order_type == "limit" and price is None:
+            raise ValueError("limit注文にはpriceの指定が必須です")
+
         path = "/user/spot/order"
         body = {
             "pair": pair,
-            "price": str(price),
             "amount": str(amount),
             "side": side,
             "type": order_type,
         }
+        if order_type != "market":
+            body["price"] = str(price)
         if post_only:
             body["post_only"] = True
         body_json = json.dumps(body)

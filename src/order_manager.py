@@ -284,7 +284,7 @@ def apply_hard_stop_loss(
     else:
         try:
             client.create_order(
-                pair=pair, price=current_price, amount=close_amount, side=close_side,
+                pair=pair, amount=close_amount, side=close_side,
                 order_type="market", post_only=False,
             )
             _apply_fill_to_portfolio(store, side=close_side, price=current_price, amount=close_amount)

@@ -61,6 +61,7 @@ jobs:
 
       - name: Create Pull Request (Tier1候補、自動マージはしない)
         if: steps.propose.outputs.proposal_needed == 'true'
+        id: create-pr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -72,3 +73,32 @@ jobs:
           labels: |
             tier1-candidate
             needs-human-review
+
+      # ==========================================================================
+      # 以下は将来の自動マージ機能の土台。現時点では無効化されている(意図的)。
+      #
+      # 有効化する前提条件:
+      #   1. 実運用実績が十分に蓄積し、この提案ロジック自体への信頼が積み上がっていること
+      #   2. GITHUB_TOKENでは、このPRに対して他のワークフロー(pull_requestトリガーのCI)が
+      #      発火しない制約があるため、Fine-grained PAT(またはGitHub App)への切り替えが必要
+      #   3. mainブランチ保護ルールで「testワークフローのステータスチェックを必須」に設定する
+      #
+      # 有効化手順:
+      #   a. Fine-grained PATを発行する
+      #      - このリポジトリのみに権限を限定する
+      #      - スコープ: Contents(Read and write), Pull requests(Read and write) のみ
+      #      - 有効期限を設定する(無期限は避ける。90日程度を推奨)
+      #   b. リポジトリの Settings > Secrets and variables > Actions に
+      #      PARAM_PROPOSAL_PAT という名前でSecretとして保存する
+      #   c. 上の "Create Pull Request" ステップの token を
+      #      ${{ secrets.GITHUB_TOKEN }} から ${{ secrets.PARAM_PROPOSAL_PAT }} に変更する
+      #      (PATに切り替えないと、下のauto-mergeが有効化されても
+      #       testワークフローが再発火せず、ステータスチェックが永久に揃わない)
+      #   d. 以下のコメントアウトを解除する
+      # ==========================================================================
+
+      # - name: Enable auto-merge (要PAT。有効化条件は上記コメント参照)
+      #   if: steps.propose.outputs.proposal_needed == 'true'
+      #   run: gh pr merge --auto --squash "${{ steps.create-pr.outputs.pull-request-number }}"
+      #   env:
+      #     GH_TOKEN: ${{ secrets.PARAM_PROPOSAL_PAT }}
