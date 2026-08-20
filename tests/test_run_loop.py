@@ -313,3 +313,32 @@ def test_run_loop_persists_base_price_on_drift_update():
     persisted = store.get_base_price()
     assert persisted is not None
     assert persisted != 159.61  # 更新後の値に変わっているはず
+
+
+def test_main_refuses_explicit_base_price_when_open_orders_exist(monkeypatch, capsys):
+    """
+    今回のインシデントの回帰テスト: --base-priceを明示指定した際、既存の
+    未約定注文がDynamoDB上にあれば起動を拒否し、価格のズレたグリッドが
+    積み重なる事故を未然に防ぐことを確認する。
+    """
+    from unittest.mock import patch, MagicMock
+    from src import run_loop as run_loop_module
+    from src.state_store import OrderRecord, OrderState
+
+    fake_store = MagicMock()
+    fake_store.list_open_orders.return_value = {
+        "r1": OrderRecord(request_id="r1", pair="xrp_jpy", side="buy", price=170.0, amount=8.0, state=OrderState.OPEN, exchange_order_id="1"),
+    }
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["run_loop", "--base-price", "176.5", "--live", "--yes", "--use-dynamodb"],
+    )
+
+    with patch("src.run_loop.DynamoDBStateStore", return_value=fake_store), \
+         patch("src.run_loop.BitbankClient") as mock_client_cls:
+        mock_client_cls.return_value.get_ticker.return_value = {"data": {"last": "176.5"}}
+        with pytest.raises(SystemExit) as exc_info:
+            run_loop_module.main()
+
+    assert exc_info.value.code == 1

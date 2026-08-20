@@ -238,6 +238,22 @@ def main():
             logger.warning("dry-runのため、--use-dynamodbが指定されていてもInMemoryStateStoreを強制使用します（本番データ保護のため）。")
         store = InMemoryStateStore()
 
+    if args.base_price is not None:
+        # 明示的にbase_priceが指定された場合、既存の未約定注文と衝突しないか確認する。
+        # ここでノーガードのまま進めると、価格のズレた新しいグリッドが積み重なる事故に
+        # つながる(実際に緊急対応中、複数回このパターンで注文が積み重なった事例がある)。
+        if args.live and args.use_dynamodb:
+            existing_open = store.list_open_orders()
+            if existing_open:
+                logger.error(
+                    f"--base-priceが明示指定されましたが、DynamoDB上に既存の未約定注文が"
+                    f"{len(existing_open)}件あります。このまま続行すると、価格のズレた新しい"
+                    f"グリッドが積み重なる事故につながるため起動を中止します。"
+                    f"先に `python3 -m src.reset_state --pair {args.pair} --use-dynamodb` を"
+                    f"実行して状態をクリーンにしてから、再度起動してください。"
+                )
+                sys.exit(1)
+
     if args.base_price is None:
         # 永続ストア(DynamoDB)に前回のbase_priceが残っていれば、それを優先して
         # 再利用する。ここで毎回「現在価格」を新規base_priceにしてしまうと、
