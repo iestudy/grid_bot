@@ -256,12 +256,19 @@ def apply_hard_stop_loss(
     pair: str,
     current_price: float,
     dry_run: bool = True,
+    ledger=None,
+    notifier=None,
 ) -> Action:
     """
     portfolio_stateから合成ポジションを作り、HardStopLossManagerで判定する。
     PARTIAL_CLOSE/FULL_CLOSE/EMERGENCY_STOP時は、必要な決済分を成行相当
     (post_only=False)で執行し、EMERGENCY_STOP/FULL_CLOSE時は残存する
     未約定注文を全てキャンセルする。
+
+    ledger(PositionLedger)を渡した場合、強制決済もFIFO往復損益の計算対象に
+    含める。これを渡さないと、緊急停止時の実現損益が日次サマリー・往復益通知に
+    一切反映されない(cash_flow/net_inventoryというリスク判定用の内部値は
+    正しく更新されるが、レポーティング用のrealized_profit_jpyには載らない)。
     """
     portfolio = store.get_portfolio_state()
     position = synthetic_position_from_portfolio(portfolio.cash_flow, portfolio.net_inventory)
@@ -289,6 +296,22 @@ def apply_hard_stop_loss(
             )
             _apply_fill_to_portfolio(store, side=close_side, price=current_price, amount=close_amount)
             logger.warning(f"強制決済執行: {close_side} {close_amount}@約{current_price} action={result.action}")
+
+            if ledger is not None:
+                round_trips = ledger.process_fill(close_side, current_price, close_amount)
+                if round_trips:
+                    updated_portfolio = store.get_portfolio_state()
+                    updated_portfolio.total_fill_count += 1
+                    for rt in round_trips:
+                        updated_portfolio.realized_profit_jpy += rt.profit_jpy
+                        logger.info(
+                            f"強制決済による往復決済: 買い{rt.buy_price}円 -> 売り{rt.sell_price}円 "
+                            f"{rt.amount}XRP 損益={rt.profit_jpy:+.2f}円"
+                        )
+                        if notifier is not None:
+                            notifier.notify_round_trip(rt.buy_price, rt.sell_price, rt.amount, rt.profit_jpy)
+                    store.save_portfolio_state(updated_portfolio)
+                    store.save_position_ledger_data(ledger.to_dict())
         except Exception as e:
             logger.error(f"強制決済に失敗しました。手動対応が必要です: {e}")
 

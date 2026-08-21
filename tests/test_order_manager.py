@@ -268,3 +268,57 @@ def test_place_grid_level_does_not_retry_non_rate_limit_errors():
 
     assert request_id is None
     assert client.create_order.call_count == 1  # リトライされない
+
+
+def test_apply_hard_stop_loss_feeds_ledger_and_notifies_on_forced_close():
+    """
+    今回のインシデントで発覚した不具合の回帰テスト:
+    強制決済(EMERGENCY_STOP等)がPositionLedgerに反映されず、
+    日次サマリー・往復益通知に実現損益が計上されない事故があった。
+    """
+    from src.position_ledger import PositionLedger
+
+    client = make_mock_client()
+    client.create_order.return_value = {"order_id": 1, "status": "FULLY_FILLED"}
+    store = InMemoryStateStore()
+    # 買いロットを1本仕込んでおき、強制決済(売り)とマッチさせる
+    ledger = PositionLedger()
+    ledger.process_fill("buy", price=160.0, amount=40.0)
+    _apply_fill_to_portfolio(store, side="buy", price=160.0, amount=40.0)
+
+    cfg = HardStopLossConfig(total_capital_jpy=10_000.0, max_drawdown_ratio=0.15, partial_close_ratio=0.08, max_price_deviation_jpy=1000.0)
+    manager = HardStopLossManager(cfg, base_price=160.0)
+    notifier = MagicMock()
+
+    # 含み損が全決済閾値(15%)を明確に超える価格まで暴落させ、FULL_CLOSEを誘発
+    action = apply_hard_stop_loss(
+        client, store, cfg, manager, "xrp_jpy", current_price=100.0, dry_run=False,
+        ledger=ledger, notifier=notifier,
+    )
+
+    assert action == Action.FULL_CLOSE
+    notifier.notify_round_trip.assert_called_once()
+    call_args = notifier.notify_round_trip.call_args[0]
+    assert call_args[0] == 160.0  # buy_price
+    assert call_args[1] == 100.0  # sell_price(強制決済の執行価格)
+
+    portfolio = store.get_portfolio_state()
+    assert portfolio.realized_profit_jpy == pytest.approx((100.0 - 160.0) * 40.0)  # -2400円の実現損
+    assert portfolio.total_fill_count == 1
+
+
+def test_apply_hard_stop_loss_works_without_ledger_backward_compatible():
+    """ledger/notifierを渡さない既存の呼び出し方でも壊れないことを確認する。"""
+    client = make_mock_client()
+    client.create_order.return_value = {"order_id": 1, "status": "FULLY_FILLED"}
+    store = InMemoryStateStore()
+    _apply_fill_to_portfolio(store, side="buy", price=160.0, amount=40.0)
+
+    cfg = HardStopLossConfig(total_capital_jpy=10_000.0, max_drawdown_ratio=0.15, max_price_deviation_jpy=1000.0)
+    manager = HardStopLossManager(cfg, base_price=160.0)
+
+    action = apply_hard_stop_loss(client, store, cfg, manager, "xrp_jpy", current_price=100.0, dry_run=False)
+
+    assert action == Action.FULL_CLOSE
+    # realized_profit_jpyはledger未指定なので更新されないままでよい(後方互換)
+    assert store.get_portfolio_state().realized_profit_jpy == 0.0

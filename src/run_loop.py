@@ -140,6 +140,7 @@ def run_loop(
             try:
                 action = apply_hard_stop_loss(
                     client, store, HARD_STOP_LOSS, manager, pair, current_price, dry_run=dry_run,
+                    ledger=ledger, notifier=notifier,
                 )
             except Exception as e:
                 logger.error(f"HardStopLoss評価に失敗しました。安全のためこの周期は新規発注を行いません: {e}")
