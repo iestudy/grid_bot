@@ -322,3 +322,77 @@ def test_apply_hard_stop_loss_works_without_ledger_backward_compatible():
     assert action == Action.FULL_CLOSE
     # realized_profit_jpyはledger未指定なので更新されないままでよい(後方互換)
     assert store.get_portfolio_state().realized_profit_jpy == 0.0
+
+
+def test_apply_hard_stop_loss_falls_back_to_limit_order_on_60002():
+    """
+    実運用で複数回発生した事故の回帰テスト: 成行注文が数量上限(60002)で
+    拒否された場合、指値(post_only=False)へフォールバックして決済を完遂する。
+    """
+    from src.bitbank_client import BitbankAPIError
+
+    client = make_mock_client()
+    market_order_error = BitbankAPIError("bitbank API error: {'success': 0, 'data': {'code': 60002}}", code=60002)
+    client.create_order.side_effect = [market_order_error, {"order_id": 1, "status": "FULLY_FILLED"}]
+    store = InMemoryStateStore()
+    _apply_fill_to_portfolio(store, side="buy", price=160.0, amount=40.0)
+
+    cfg = HardStopLossConfig(total_capital_jpy=10_000.0, max_drawdown_ratio=0.15, max_price_deviation_jpy=1000.0)
+    manager = HardStopLossManager(cfg, base_price=160.0)
+
+    action = apply_hard_stop_loss(client, store, cfg, manager, "xrp_jpy", current_price=100.0, dry_run=False)
+
+    assert action == Action.FULL_CLOSE
+    assert client.create_order.call_count == 2
+    # 1回目: 成行(price指定なし)
+    first_call_kwargs = client.create_order.call_args_list[0].kwargs
+    assert first_call_kwargs["order_type"] == "market"
+    assert "price" not in first_call_kwargs
+    # 2回目: 指値フォールバック(post_only=False、成行より不利な側に価格を振っている)
+    second_call_kwargs = client.create_order.call_args_list[1].kwargs
+    assert second_call_kwargs["order_type"] == "limit"
+    assert second_call_kwargs["post_only"] is False
+    # このテストはロング40XRPを下落局面で決済するシナリオ(close_side="sell")なので、
+    # 確実に約定させるため現在価格より低い指値になっているはず
+    assert second_call_kwargs["price"] < 100.0
+
+    portfolio = store.get_portfolio_state()
+    assert portfolio.net_inventory == pytest.approx(0.0)  # 決済が完遂している
+
+
+def test_apply_hard_stop_loss_does_not_fallback_on_other_errors():
+    """60002以外のエラーではフォールバックせず、そのまま失敗として扱われる。"""
+    client = make_mock_client()
+    client.create_order.side_effect = RuntimeError("network error")
+    store = InMemoryStateStore()
+    _apply_fill_to_portfolio(store, side="buy", price=160.0, amount=40.0)
+
+    cfg = HardStopLossConfig(total_capital_jpy=10_000.0, max_drawdown_ratio=0.15, max_price_deviation_jpy=1000.0)
+    manager = HardStopLossManager(cfg, base_price=160.0)
+
+    action = apply_hard_stop_loss(client, store, cfg, manager, "xrp_jpy", current_price=100.0, dry_run=False)
+
+    assert action == Action.FULL_CLOSE
+    assert client.create_order.call_count == 1  # リトライされない
+    # 決済が完遂していないため、ポジションはそのまま残っている
+    assert store.get_portfolio_state().net_inventory == pytest.approx(40.0)
+
+
+def test_apply_hard_stop_loss_logs_error_when_fallback_also_fails():
+    from src.bitbank_client import BitbankAPIError
+
+    client = make_mock_client()
+    market_order_error = BitbankAPIError("bitbank API error: {'success': 0, 'data': {'code': 60002}}", code=60002)
+    client.create_order.side_effect = [market_order_error, RuntimeError("fallback also failed")]
+    store = InMemoryStateStore()
+    _apply_fill_to_portfolio(store, side="buy", price=160.0, amount=40.0)
+
+    cfg = HardStopLossConfig(total_capital_jpy=10_000.0, max_drawdown_ratio=0.15, max_price_deviation_jpy=1000.0)
+    manager = HardStopLossManager(cfg, base_price=160.0)
+
+    action = apply_hard_stop_loss(client, store, cfg, manager, "xrp_jpy", current_price=100.0, dry_run=False)
+
+    assert action == Action.FULL_CLOSE
+    assert client.create_order.call_count == 2
+    # 両方失敗したのでポジションは未決済のまま
+    assert store.get_portfolio_state().net_inventory == pytest.approx(40.0)

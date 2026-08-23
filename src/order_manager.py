@@ -289,16 +289,48 @@ def apply_hard_stop_loss(
     if dry_run:
         logger.warning(f"[DRY RUN] 強制決済シミュレーション: {close_side} {close_amount}@市場価格付近 action={result.action}")
     else:
+        executed_price = current_price
+        succeeded = False
         try:
             client.create_order(
                 pair=pair, amount=close_amount, side=close_side,
                 order_type="market", post_only=False,
             )
-            _apply_fill_to_portfolio(store, side=close_side, price=current_price, amount=close_amount)
-            logger.warning(f"強制決済執行: {close_side} {close_amount}@約{current_price} action={result.action}")
+            succeeded = True
+        except Exception as e:
+            is_market_quantity_limit = isinstance(e, BitbankAPIError) and e.code == 60002
+            if is_market_quantity_limit:
+                # 成行注文の数量上限(板の流動性に応じて動的に変動する可能性がある)に
+                # 引っかかった場合、成行の代わりに板を確実に突き抜ける指値注文
+                # (post_only=False)にフォールバックする。買いは上振れ、売りは
+                # 下振れさせた価格を使い、実質的に成行と同等の即時約定を狙う。
+                fallback_margin = 0.02  # 2%のマージン。板の急変動を吸収する目的
+                if close_side == "buy":
+                    fallback_price = round(current_price * (1 + fallback_margin), 4)
+                else:
+                    fallback_price = round(current_price * (1 - fallback_margin), 4)
+                logger.warning(
+                    f"成行注文が数量上限(60002)で拒否されました。指値(post_only=False)へ"
+                    f"フォールバックします: {close_side} {close_amount}@{fallback_price}"
+                )
+                try:
+                    client.create_order(
+                        pair=pair, amount=close_amount, side=close_side, price=fallback_price,
+                        order_type="limit", post_only=False,
+                    )
+                    executed_price = fallback_price
+                    succeeded = True
+                except Exception as fallback_error:
+                    logger.error(f"指値フォールバックも失敗しました。手動対応が必要です: {fallback_error}")
+            else:
+                logger.error(f"強制決済に失敗しました。手動対応が必要です: {e}")
+
+        if succeeded:
+            _apply_fill_to_portfolio(store, side=close_side, price=executed_price, amount=close_amount)
+            logger.warning(f"強制決済執行: {close_side} {close_amount}@約{executed_price} action={result.action}")
 
             if ledger is not None:
-                round_trips = ledger.process_fill(close_side, current_price, close_amount)
+                round_trips = ledger.process_fill(close_side, executed_price, close_amount)
                 if round_trips:
                     updated_portfolio = store.get_portfolio_state()
                     updated_portfolio.total_fill_count += 1
@@ -312,8 +344,6 @@ def apply_hard_stop_loss(
                             notifier.notify_round_trip(rt.buy_price, rt.sell_price, rt.amount, rt.profit_jpy)
                     store.save_portfolio_state(updated_portfolio)
                     store.save_position_ledger_data(ledger.to_dict())
-        except Exception as e:
-            logger.error(f"強制決済に失敗しました。手動対応が必要です: {e}")
 
     if result.action in (Action.FULL_CLOSE, Action.EMERGENCY_STOP):
         _cancel_all_open_orders(client, store, pair, dry_run=dry_run)
