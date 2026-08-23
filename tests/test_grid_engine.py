@@ -158,3 +158,30 @@ def test_should_update_base_price_bidirectional_false_when_no_fill_time_not_elap
     now = 60  # まだ1分しか経っていない
     result = should_update_base_price_bidirectional(state, market_price=157.5, now_timestamp=now, cfg=cfg)
     assert result is False
+
+
+def test_synthetic_position_returns_none_for_negative_net_inventory():
+    """
+    現物取引では実在の空売りが発生し得ないため、net_inventory<0
+    (起動時保有在庫の売り切り)はポジションなしとして扱う。
+    """
+    from src.grid_engine import synthetic_position_from_portfolio
+
+    pos = synthetic_position_from_portfolio(cash_flow=8610.60, net_inventory=-40.0)
+    assert pos is None
+
+
+def test_synthetic_position_returns_none_for_zero_net_inventory():
+    from src.grid_engine import synthetic_position_from_portfolio
+
+    pos = synthetic_position_from_portfolio(cash_flow=0.0, net_inventory=0.0)
+    assert pos is None
+
+
+def test_synthetic_position_still_works_for_positive_net_inventory():
+    from src.grid_engine import synthetic_position_from_portfolio
+
+    pos = synthetic_position_from_portfolio(cash_flow=-1000.0, net_inventory=10.0)
+    assert pos is not None
+    assert pos.side == "buy"
+    assert pos.amount == pytest.approx(10.0)

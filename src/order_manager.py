@@ -280,70 +280,75 @@ def apply_hard_stop_loss(
     if result.action == Action.NONE:
         return result.action
 
-    close_amount = result.close_amount if result.action == Action.PARTIAL_CLOSE else abs(portfolio.net_inventory)
-    if close_amount <= 0:
-        return result.action
-
-    close_side = "sell" if portfolio.net_inventory > 0 else "buy"
-
-    if dry_run:
-        logger.warning(f"[DRY RUN] 強制決済シミュレーション: {close_side} {close_amount}@市場価格付近 action={result.action}")
+    if portfolio.net_inventory <= 0:
+        # 現物取引では実在の空売りは発生し得ない。net_inventory<=0は
+        # 「起動時点で保有していた在庫を使い切った」という会計上のラベルに
+        # 過ぎず、買い戻しで解消すべき実在のリスクポジションではないため、
+        # 強制決済(売買)は行わない。EMERGENCY_STOP/FULL_CLOSE自体(新規発注停止・
+        # 既存注文の全キャンセル)は、価格乖離という別の観点から引き続き有効。
+        logger.info(
+            f"net_inventory={portfolio.net_inventory}のため強制決済(買い戻し)は行いません"
+            f"(現物取引では実在のショートポジションが発生しないため)。"
+        )
     else:
-        executed_price = current_price
-        succeeded = False
-        try:
-            client.create_order(
-                pair=pair, amount=close_amount, side=close_side,
-                order_type="market", post_only=False,
-            )
-            succeeded = True
-        except Exception as e:
-            is_market_quantity_limit = isinstance(e, BitbankAPIError) and e.code == 60002
-            if is_market_quantity_limit:
-                # 成行注文の数量上限(板の流動性に応じて動的に変動する可能性がある)に
-                # 引っかかった場合、成行の代わりに板を確実に突き抜ける指値注文
-                # (post_only=False)にフォールバックする。買いは上振れ、売りは
-                # 下振れさせた価格を使い、実質的に成行と同等の即時約定を狙う。
-                fallback_margin = 0.02  # 2%のマージン。板の急変動を吸収する目的
-                if close_side == "buy":
-                    fallback_price = round(current_price * (1 + fallback_margin), 4)
-                else:
-                    fallback_price = round(current_price * (1 - fallback_margin), 4)
-                logger.warning(
-                    f"成行注文が数量上限(60002)で拒否されました。指値(post_only=False)へ"
-                    f"フォールバックします: {close_side} {close_amount}@{fallback_price}"
-                )
+        close_amount = result.close_amount if result.action == Action.PARTIAL_CLOSE else portfolio.net_inventory
+        close_side = "sell"
+
+        if close_amount > 0:
+            if dry_run:
+                logger.warning(f"[DRY RUN] 強制決済シミュレーション: {close_side} {close_amount}@市場価格付近 action={result.action}")
+            else:
+                executed_price = current_price
+                succeeded = False
                 try:
                     client.create_order(
-                        pair=pair, amount=close_amount, side=close_side, price=fallback_price,
-                        order_type="limit", post_only=False,
+                        pair=pair, amount=close_amount, side=close_side,
+                        order_type="market", post_only=False,
                     )
-                    executed_price = fallback_price
                     succeeded = True
-                except Exception as fallback_error:
-                    logger.error(f"指値フォールバックも失敗しました。手動対応が必要です: {fallback_error}")
-            else:
-                logger.error(f"強制決済に失敗しました。手動対応が必要です: {e}")
-
-        if succeeded:
-            _apply_fill_to_portfolio(store, side=close_side, price=executed_price, amount=close_amount)
-            logger.warning(f"強制決済執行: {close_side} {close_amount}@約{executed_price} action={result.action}")
-
-            if ledger is not None:
-                round_trips = ledger.process_fill(close_side, executed_price, close_amount)
-                if round_trips:
-                    updated_portfolio = store.get_portfolio_state()
-                    updated_portfolio.total_fill_count += 1
-                    for rt in round_trips:
-                        updated_portfolio.realized_profit_jpy += rt.profit_jpy
-                        logger.info(
-                            f"強制決済による往復決済: 買い{rt.buy_price}円 -> 売り{rt.sell_price}円 "
-                            f"{rt.amount}XRP 損益={rt.profit_jpy:+.2f}円"
+                except Exception as e:
+                    is_market_quantity_limit = isinstance(e, BitbankAPIError) and e.code == 60002
+                    if is_market_quantity_limit:
+                        # 成行注文の数量上限(板の流動性に応じて動的に変動する可能性がある)に
+                        # 引っかかった場合、成行の代わりに板を確実に突き抜ける指値注文
+                        # (post_only=False)にフォールバックする。
+                        fallback_margin = 0.02  # 2%のマージン。板の急変動を吸収する目的
+                        fallback_price = round(current_price * (1 - fallback_margin), 4)
+                        logger.warning(
+                            f"成行注文が数量上限(60002)で拒否されました。指値(post_only=False)へ"
+                            f"フォールバックします: {close_side} {close_amount}@{fallback_price}"
                         )
-                        if notifier is not None:
-                            notifier.notify_round_trip(rt.buy_price, rt.sell_price, rt.amount, rt.profit_jpy)
-                    store.save_portfolio_state(updated_portfolio)
-                    store.save_position_ledger_data(ledger.to_dict())
+                        try:
+                            client.create_order(
+                                pair=pair, amount=close_amount, side=close_side, price=fallback_price,
+                                order_type="limit", post_only=False,
+                            )
+                            executed_price = fallback_price
+                            succeeded = True
+                        except Exception as fallback_error:
+                            logger.error(f"指値フォールバックも失敗しました。手動対応が必要です: {fallback_error}")
+                    else:
+                        logger.error(f"強制決済に失敗しました。手動対応が必要です: {e}")
+
+                if succeeded:
+                    _apply_fill_to_portfolio(store, side=close_side, price=executed_price, amount=close_amount)
+                    logger.warning(f"強制決済執行: {close_side} {close_amount}@約{executed_price} action={result.action}")
+
+                    if ledger is not None:
+                        round_trips = ledger.process_fill(close_side, executed_price, close_amount)
+                        if round_trips:
+                            updated_portfolio = store.get_portfolio_state()
+                            updated_portfolio.total_fill_count += 1
+                            for rt in round_trips:
+                                updated_portfolio.realized_profit_jpy += rt.profit_jpy
+                                logger.info(
+                                    f"強制決済による往復決済: 買い{rt.buy_price}円 -> 売り{rt.sell_price}円 "
+                                    f"{rt.amount}XRP 損益={rt.profit_jpy:+.2f}円"
+                                )
+                                if notifier is not None:
+                                    notifier.notify_round_trip(rt.buy_price, rt.sell_price, rt.amount, rt.profit_jpy)
+                            store.save_portfolio_state(updated_portfolio)
+                            store.save_position_ledger_data(ledger.to_dict())
 
     if result.action in (Action.FULL_CLOSE, Action.EMERGENCY_STOP):
         _cancel_all_open_orders(client, store, pair, dry_run=dry_run)

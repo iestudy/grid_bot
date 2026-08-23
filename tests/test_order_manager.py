@@ -396,3 +396,47 @@ def test_apply_hard_stop_loss_logs_error_when_fallback_also_fails():
     assert client.create_order.call_count == 2
     # 両方失敗したのでポジションは未決済のまま
     assert store.get_portfolio_state().net_inventory == pytest.approx(40.0)
+
+
+def test_apply_hard_stop_loss_skips_forced_close_for_negative_net_inventory():
+    """
+    今回のインシデントの回帰テスト: net_inventory<0(現物の在庫売り切り)は
+    実在のショートポジションではないため、EMERGENCY_STOP(価格乖離)が発動しても
+    買い戻しの強制決済は行わない。既存注文のキャンセルは引き続き行う。
+    """
+    client = make_mock_client()
+    store = InMemoryStateStore()
+    # 在庫を売り切った状態を再現(cash_flowは売却代金、net_inventoryはマイナス)
+    _apply_fill_to_portfolio(store, side="sell", price=200.0, amount=40.0)
+    assert store.get_portfolio_state().net_inventory == pytest.approx(-40.0)
+
+    order = OrderRecord(
+        request_id="r1", pair="xrp_jpy", side="buy", price=190.0, amount=8.0,
+        state=OrderState.OPEN, exchange_order_id="777",
+    )
+    store.save_order(order)
+
+    # 価格乖離でEMERGENCY_STOPを誘発(base_priceからの乖離が大きい)
+    cfg = HardStopLossConfig(total_capital_jpy=30_000.0, max_price_deviation_jpy=8.0)
+    manager = HardStopLossManager(cfg, base_price=200.0)
+
+    action = apply_hard_stop_loss(client, store, cfg, manager, "xrp_jpy", current_price=215.0, dry_run=False)
+
+    assert action == Action.EMERGENCY_STOP
+    client.create_order.assert_not_called()  # 買い戻しの強制決済は行われない
+    client.cancel_order.assert_called_once()  # 既存注文のキャンセルは引き続き行われる
+    # portfolio(net_inventory)は変化していない
+    assert store.get_portfolio_state().net_inventory == pytest.approx(-40.0)
+
+
+def test_apply_hard_stop_loss_skips_forced_close_for_zero_net_inventory():
+    client = make_mock_client()
+    store = InMemoryStateStore()  # net_inventory=0のまま(初期状態)
+
+    cfg = HardStopLossConfig(total_capital_jpy=30_000.0, max_price_deviation_jpy=8.0)
+    manager = HardStopLossManager(cfg, base_price=200.0)
+
+    action = apply_hard_stop_loss(client, store, cfg, manager, "xrp_jpy", current_price=215.0, dry_run=False)
+
+    assert action == Action.EMERGENCY_STOP
+    client.create_order.assert_not_called()

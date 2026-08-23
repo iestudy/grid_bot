@@ -94,14 +94,20 @@ def synthetic_position_from_portfolio(cash_flow: float, net_inventory: float, co
     と完全に一致する。個々の約定ロットを追跡しなくても、累積した
     cash_flow/net_inventoryの2値だけで正確な含み損益判定ができる。
 
-    net_inventory == 0 の場合はポジションなしとしてNoneを返す。
+    net_inventory <= 0 の場合はポジションなし(None)として扱う。
+    現物取引では実在の空売りは発生し得ないため、net_inventoryが負値になるのは
+    「起動時点で保有していた在庫を売り切った」という会計上のラベルに過ぎず、
+    買い戻しで解消すべき実在のリスクポジションではない。これを実在のショート
+    ポジションとして扱うと、価格が上昇し続ける限り無限に「含み損」が拡大する
+    見かけ上の計算になり、不要な強制決済(買い戻し)を誘発してしまう
+    (実際に本番運用で、EMERGENCY_STOP時に不要な買い戻しを試みる事故があった)。
     """
     from .hard_stop_loss import Position
 
-    if net_inventory == 0:
+    if net_inventory <= 0:
         return None
     cost_price = -cash_flow / net_inventory
-    side = "buy" if net_inventory > 0 else "sell"
+    side = "buy"
     return Position(side=side, price=cost_price, amount=abs(net_inventory))
 
 
