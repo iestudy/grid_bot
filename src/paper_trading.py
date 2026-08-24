@@ -139,6 +139,58 @@ def run_simulation_with_replenishment(
     return fills
 
 
+def run_simulation_with_halt(
+    base_price: float,
+    cfg,  # GridEnvelopeConfig
+    trades: Iterator[Trade],
+    halt_deviation_jpy: float = None,
+    max_active_levels: int = None,
+) -> List[SimulatedFill]:
+    """
+    run_simulation_with_replenishmentに「案4」の新規発注停止ロジックを追加した版。
+    現在価格がbase_priceからhalt_deviation_jpy以上乖離している間は、約定した
+    レベルの再投入(新規発注)を行わない。これは本番のrun_loop.pyにおける
+    should_halt_new_orders()と同一のロジックであり、backtest/本番間の
+    ロジック不一致を避けるため、grid_engine.should_halt_new_ordersをそのまま使う。
+
+    halt_deviation_jpy未指定時はcfg.new_order_halt_deviation_jpyを使う。
+    """
+    from .grid_engine import generate_grid, GridLevel, should_halt_new_orders
+
+    if halt_deviation_jpy is None:
+        halt_deviation_jpy = cfg.new_order_halt_deviation_jpy
+    if max_active_levels is None:
+        max_active_levels = cfg.max_buy_levels + cfg.max_sell_levels
+
+    levels = generate_grid(base_price, cfg)
+    simulator = ConservativeFillSimulator(default_amount=cfg.amount_per_level_xrp)
+    fills: List[SimulatedFill] = []
+    width = cfg.grid_width_default_jpy
+
+    for trade in trades:
+        halted = should_halt_new_orders(trade.price, base_price, halt_deviation_jpy)
+        still_open = []
+        newly_added = []
+        for level in levels:
+            fill = simulator.check_fill(level, trade)
+            if fill:
+                fills.append(fill)
+                if not halted and len(levels) - 1 + len(newly_added) < max_active_levels:
+                    if level.side == "buy":
+                        newly_added.append(GridLevel(
+                            side="sell", price=round(level.price + width, 4), amount=level.amount,
+                        ))
+                    else:
+                        newly_added.append(GridLevel(
+                            side="buy", price=round(level.price - width, 4), amount=level.amount,
+                        ))
+            else:
+                still_open.append(level)
+        levels = still_open + newly_added
+
+    return fills
+
+
 def run_simulation_with_stop_loss(
     base_price: float,
     cfg,  # GridEnvelopeConfig
@@ -300,6 +352,42 @@ def sweep_grid_width_only(
             "net_inventory_xrp": pnl["net_inventory_xrp"],
             "fills": len(fills),
         })
+
+    results.sort(key=lambda r: r["total_pnl_jpy"], reverse=True)
+    return results
+
+
+def sweep_grid_width_and_halt(
+    base_price: float,
+    base_cfg,  # GridEnvelopeConfig
+    trades_list: List[Trade],
+    widths: List[float],
+    halt_deviations: List[float],
+) -> List[dict]:
+    """
+    grid_width と new_order_halt_deviation_jpy(案4: base_price乖離ベースの
+    新規発注停止)の2軸を対象にしたスイープ。run_simulation_with_haltを使い、
+    本番のrun_loop.pyと同一のshould_halt_new_ordersロジックでバックテストする。
+    """
+    import dataclasses
+
+    results = []
+    final_price = trades_list[-1].price if trades_list else base_price
+
+    for width in widths:
+        for halt_dev in halt_deviations:
+            cfg = dataclasses.replace(
+                base_cfg, grid_width_default_jpy=width, new_order_halt_deviation_jpy=halt_dev,
+            )
+            fills = run_simulation_with_halt(base_price, cfg, iter(trades_list), halt_deviation_jpy=halt_dev)
+            pnl = compute_pnl(fills, final_price)
+            results.append({
+                "width": width,
+                "halt_deviation_jpy": halt_dev,
+                "total_pnl_jpy": pnl["total_pnl_jpy"],
+                "net_inventory_xrp": pnl["net_inventory_xrp"],
+                "fills": len(fills),
+            })
 
     results.sort(key=lambda r: r["total_pnl_jpy"], reverse=True)
     return results

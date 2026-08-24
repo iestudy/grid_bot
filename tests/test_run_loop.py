@@ -342,3 +342,48 @@ def test_main_refuses_explicit_base_price_when_open_orders_exist(monkeypatch, ca
             run_loop_module.main()
 
     assert exc_info.value.code == 1
+
+
+def test_run_loop_halts_new_orders_when_deviation_exceeds_threshold():
+    """
+    案4: base_priceからの片道乖離が閾値を超えたら新規発注を停止する。
+    既存注文には影響しないことも確認する。
+    """
+    from unittest.mock import patch
+    from src.state_store import InMemoryStateStore, OrderRecord, OrderState
+
+    # base_price=159.61に対し、乖離4.0円(デフォルト閾値)を明確に超える163.7を使う
+    client = make_mock_client(last_price=163.7)
+    client.get_active_orders.return_value = {"orders": [{"order_id": 999}]}
+    store = InMemoryStateStore()
+    store.save_order(OrderRecord(
+        request_id="r1", pair="xrp_jpy", side="buy", price=158.0, amount=8.0,
+        state=OrderState.OPEN, exchange_order_id="999",
+    ))
+
+    with patch("src.run_loop.sync_grid_orders") as mock_sync:
+        run_loop(
+            client=client, store=store, pair="xrp_jpy", base_price=159.61,
+            poll_interval_sec=0, max_iterations=2, dry_run=False,
+        )
+
+    mock_sync.assert_not_called()  # 新規発注が試みられていない
+    # 既存注文はそのまま(キャンセルされていない)
+    assert store.get_order("r1").state == OrderState.OPEN
+
+
+def test_run_loop_places_new_orders_when_within_deviation_threshold():
+    from unittest.mock import patch
+    from src.state_store import InMemoryStateStore
+
+    client = make_mock_client(last_price=160.0)  # base_priceから0.39円、閾値内
+    client.get_active_orders.return_value = {"orders": []}
+    store = InMemoryStateStore()
+
+    with patch("src.run_loop.sync_grid_orders", return_value=0) as mock_sync:
+        run_loop(
+            client=client, store=store, pair="xrp_jpy", base_price=159.61,
+            poll_interval_sec=0, max_iterations=1, dry_run=False,
+        )
+
+    mock_sync.assert_called_once()

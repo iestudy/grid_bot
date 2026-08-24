@@ -27,6 +27,7 @@ from .bitbank_client import BitbankClient
 from .state_store import InMemoryStateStore, DynamoDBStateStore
 from .grid_engine import (
     generate_grid, DriftState, should_update_base_price_bidirectional, update_base_price,
+    should_halt_new_orders,
 )
 from .hard_stop_loss import HardStopLossManager, Action
 from .order_manager import reconcile_orders, apply_hard_stop_loss, sync_grid_orders
@@ -176,12 +177,19 @@ def run_loop(
                     except Exception as e:
                         logger.warning(f"base_price永続化に失敗(次回再起動時は今回のドリフト前の値から再開されます): {e}")
 
-            try:
-                placed = sync_grid_orders(client, store, pair, desired_levels, dry_run=dry_run)
-                if placed:
-                    logger.info(f"新規発注: {placed}件")
-            except Exception as e:
-                logger.error(f"グリッド発注同期に失敗: {e}")
+            if should_halt_new_orders(current_price, drift_state.base_price, GRID_ENVELOPE.new_order_halt_deviation_jpy):
+                logger.info(
+                    f"base_priceからの乖離({abs(current_price - drift_state.base_price):.3f}円)が"
+                    f"閾値({GRID_ENVELOPE.new_order_halt_deviation_jpy}円)を超えたため、"
+                    f"新規発注を一時停止します(既存注文はそのまま維持)。"
+                )
+            else:
+                try:
+                    placed = sync_grid_orders(client, store, pair, desired_levels, dry_run=dry_run)
+                    if placed:
+                        logger.info(f"新規発注: {placed}件")
+                except Exception as e:
+                    logger.error(f"グリッド発注同期に失敗: {e}")
 
             time.sleep(poll_interval_sec)
 

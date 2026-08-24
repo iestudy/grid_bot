@@ -5,8 +5,12 @@
 # 無効化している。改善が見つかった場合でも、必ず人間がPRの内容を確認し、
 # 手動でマージすること。
 #
-# 対象パラメータはgrid_widthのみ(Walk-Forward検証で信頼性が実証済みのため)。
-# レジームフィルタ等、過学習と判明したパラメータは自動化対象に含めない。
+# 対象パラメータはgrid_width と new_order_halt_deviation_jpy(案4: base_price
+# 乖離ベースの新規発注停止)の2つ。前者はWalk-Forward検証で信頼性が実証済み。
+# 後者は既にEMERGENCY_STOPで信頼している「base_price乖離」という単一指標のみを
+# 使う設計のため自動探索対象に含めているが、実運用実績はまだ乏しい。
+# レジームフィルタ(trend_window/threshold)等、過学習と判明したパラメータは
+# 自動化対象に含めない。
 #
 # 事前準備:
 #   リポジトリの Settings > Actions > General > Workflow permissions で
@@ -55,7 +59,7 @@ jobs:
       - name: Fetch recent historical data (bitbank Public API、認証不要)
         run: python3 -m src.data_fetch --pair xrp_jpy --days 14 --out data/weekly_trades.csv
 
-      - name: Run grid_width sweep and propose config change if warranted
+      - name: Run grid_width & halt_deviation sweep and propose config change if warranted
         id: propose
         run: python3 -m src.propose_params --trades-csv data/weekly_trades.csv
 
@@ -65,10 +69,10 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(params): 週次バックテストによるgrid_width調整提案"
+          commit-message: "chore(params): 週次バックテストによるgrid_width/halt_deviation調整提案"
           branch: auto/weekly-param-proposal
           delete-branch: true
-          title: "[Tier1候補] grid_width調整の提案（週次バックテスト自動生成）"
+          title: "[Tier1候補] パラメータ調整の提案（週次バックテスト自動生成）"
           body-path: PR_BODY.md
           labels: |
             tier1-candidate

@@ -45,6 +45,16 @@ class GridEnvelopeConfig:
     # 口座残高が変わったら、estimate_total_capital_jpy()の結果を見ながら調整すること。
     amount_per_level_xrp: float = 8.0
 
+    # base_priceからの片道乖離がこの値以上になったら、新規発注(sync_grid_orders)を
+    # 一時停止する(既存注文はそのまま、HardStopLossManagerの判定・キャンセルも
+    # 別途独立して機能する)。EMERGENCY_STOP閾値(HardStopLossConfig.max_price_deviation_jpy、
+    # デフォルト8円)より内側で発動する「早期警戒ライン」として機能させる。
+    # 以前否決したレジームフィルタ(trend_window/threshold)とは異なり、
+    # 既に信頼しているbase_price乖離という単一指標のみを使う設計。
+    new_order_halt_deviation_min_jpy: float = 2.0
+    new_order_halt_deviation_max_jpy: float = 6.0
+    new_order_halt_deviation_jpy: float = 4.0
+
     # 24時間の累積ドリフト上限（初期値からの乖離率）。これを超えたら強制的にTier2へ
     cumulative_drift_limit_ratio: float = 0.30
 

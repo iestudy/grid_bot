@@ -192,3 +192,20 @@ def detect_trend(reference_price: float, current_price: float, threshold_ratio: 
         return False
     change_ratio = abs(current_price - reference_price) / reference_price
     return change_ratio >= threshold_ratio
+
+
+def should_halt_new_orders(current_price: float, base_price: float, halt_deviation_jpy: float) -> bool:
+    """
+    base_priceからの片道乖離がhalt_deviation_jpy以上なら、新規発注(グリッドの
+    再投入)を一時停止すべきと判定する。
+
+    EMERGENCY_STOP(HardStopLossConfig.max_price_deviation_jpy、既定8円)より
+    内側の閾値として使うことを想定した「早期警戒ライン」。既存注文の維持・
+    HardStopLossManagerによる強制決済判定には一切影響しない
+    (このモジュールは新規発注の要否だけを判定する)。
+
+    以前否決したレジームフィルタ(trend_window/threshold)との違い:
+    あちらは恣意的なパラメータが複数あり過学習を招いたが、こちらは
+    既にEMERGENCY_STOPで信頼している「base_price乖離」という単一指標のみを使う。
+    """
+    return abs(current_price - base_price) >= halt_deviation_jpy

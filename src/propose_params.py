@@ -1,29 +1,32 @@
 """
-週次バックテスト結果からgrid_widthの変更を提案する。GitHub Actionsから呼ばれる。
+週次バックテスト結果から、grid_widthとnew_order_halt_deviation_jpy(案4:
+base_price乖離ベースの新規発注停止)の変更を提案する。GitHub Actionsから呼ばれる。
 
 Tier1候補としてPRを自動作成するが、自動マージは行わない
 (実運用実績がまだ十分に蓄積していないため、意図的に無効化している)。
 
-対象パラメータはgrid_widthのみに限定している。理由:
+対象パラメータをこの2つに限定している理由:
 Walk-Forward検証の結果、レジームフィルタ(trend_window/threshold)は
-過学習と判明し不採用となった一方、grid_widthの調整だけは訓練・検証
-両期間で一貫して効果が確認された。信頼性が実証されていないパラメータを
-自動化対象に含めるべきではない。
+過学習と判明し不採用となった一方、grid_widthの調整は訓練・検証両期間で
+一貫して効果が確認された。new_order_halt_deviation_jpyは、恣意的な
+パラメータを複数持つレジームフィルタとは異なり、既にEMERGENCY_STOPで
+信頼している「base_price乖離」という単一指標のみを使う設計であるため、
+自動探索対象に加えている。ただし実運用実績はまだ乏しいため、
+提案は必ず人間のレビュー・マージを経ること。
 
-探索範囲は config.py の envelope(grid_width_min_jpy 〜 grid_width_max_jpy)
-に自動的に収まる(このスクリプト自身がenvelope外の値を提案することはない)。
+探索範囲は config.py の envelope に自動的に収まる
+(このスクリプト自身がenvelope外の値を提案することはない)。
 
 改善とみなす閾値: 現在値に対して total_pnl_jpy が MIN_IMPROVEMENT_RATIO 以上
 改善している場合のみ提案する。わずかな差(ノイズ)での提案を防ぐため。
 """
 
 import argparse
-import dataclasses
 import logging
 import os
 import re
 
-from .paper_trading import sweep_grid_width_only, _load_trades_from_csv
+from .paper_trading import sweep_grid_width_and_halt, _load_trades_from_csv
 from .config import GRID_ENVELOPE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -43,42 +46,64 @@ def compute_width_candidates(cfg) -> list:
     return widths
 
 
-def update_config_file(new_width: float) -> None:
+def compute_halt_deviation_candidates(cfg) -> list:
+    """envelope範囲内を0.5円刻みで候補として生成する。"""
+    values = []
+    v = cfg.new_order_halt_deviation_min_jpy
+    while v <= cfg.new_order_halt_deviation_max_jpy + 1e-9:
+        values.append(round(v, 2))
+        v += 0.5
+    return values
+
+
+def update_config_file(new_width: float, new_halt_deviation: float) -> None:
     with open(CONFIG_PATH) as f:
         content = f.read()
 
-    pattern = r"(grid_width_default_jpy:\s*float\s*=\s*)[\d.]+"
-    new_content, count = re.subn(pattern, rf"\g<1>{new_width}", content)
-    if count != 1:
-        raise RuntimeError(f"grid_width_default_jpyの置換に失敗しました(マッチ数={count})。config.pyの形式が変わっていないか確認してください。")
+    replacements = [
+        (r"(grid_width_default_jpy:\s*float\s*=\s*)[\d.]+", new_width),
+        (r"(new_order_halt_deviation_jpy:\s*float\s*=\s*)[\d.]+", new_halt_deviation),
+    ]
+    for pattern, new_value in replacements:
+        content, count = re.subn(pattern, rf"\g<1>{new_value}", content)
+        if count != 1:
+            raise RuntimeError(f"パターン '{pattern}' の置換に失敗しました(マッチ数={count})。config.pyの形式が変わっていないか確認してください。")
 
     with open(CONFIG_PATH, "w") as f:
-        f.write(new_content)
+        f.write(content)
 
 
-def write_pr_body(current_width: float, current_pnl, best: dict, all_results: list, trades_csv: str) -> None:
+def write_pr_body(
+    current_width: float, current_halt: float, current_pnl,
+    best: dict, all_results: list, trades_csv: str,
+) -> None:
     if current_pnl is not None and abs(current_pnl) > 1e-9:
         improvement_line = f"- 改善率: {(best['total_pnl_jpy'] / abs(current_pnl) - 1) * 100:.1f}%"
     else:
         improvement_line = "- 改善率: 算出不可(現在値の損益がゼロまたはスイープ対象外)"
 
     lines = [
-        "## 週次バックテストによるgrid_width調整提案(Tier1候補)",
+        "## 週次バックテストによるパラメータ調整提案(Tier1候補)",
         "",
         "**このPRは自動マージされません。内容を確認の上、手動でマージしてください。**",
         "",
-        f"- 現在値: `{current_width}` 円",
-        f"- 提案値: `{best['width']}` 円",
+        f"- 現在値: grid_width=`{current_width}`円 / new_order_halt_deviation=`{current_halt}`円",
+        f"- 提案値: grid_width=`{best['width']}`円 / new_order_halt_deviation=`{best['halt_deviation_jpy']}`円",
         improvement_line,
         "",
-        "### 全候補の結果",
+        "### 上位候補（全候補中、損益上位20件）",
         "",
-        "| grid_width | 損益(円) | 期末純在庫(XRP) | 約定数 |",
-        "|---|---|---|---|",
+        "| grid_width | halt_deviation | 損益(円) | 期末純在庫(XRP) | 約定数 |",
+        "|---|---|---|---|---|",
     ]
-    for r in all_results:
-        marker = " ← 提案" if r["width"] == best["width"] else (" (現在値)" if r["width"] == current_width else "")
-        lines.append(f"| {r['width']} | {r['total_pnl_jpy']:.2f} | {r['net_inventory_xrp']:.2f} | {r['fills']}{marker} |")
+    for r in all_results[:20]:
+        is_best = r["width"] == best["width"] and r["halt_deviation_jpy"] == best["halt_deviation_jpy"]
+        is_current = r["width"] == current_width and r["halt_deviation_jpy"] == current_halt
+        marker = " ← 提案" if is_best else (" (現在値)" if is_current else "")
+        lines.append(
+            f"| {r['width']} | {r['halt_deviation_jpy']} | {r['total_pnl_jpy']:.2f} | "
+            f"{r['net_inventory_xrp']:.2f} | {r['fills']}{marker} |"
+        )
 
     lines += [
         "",
@@ -88,15 +113,16 @@ def write_pr_body(current_width: float, current_pnl, best: dict, all_results: li
         "### 注意",
         "- この提案は直近データへの過学習の可能性があります。マージ前に自身でも数値を確認してください。",
         "- HardStopLossManagerの閾値はこの自動化の対象外です(常に人間の変更が必要です)。",
+        "- new_order_halt_deviation_jpyは実運用実績がまだ乏しいパラメータです。特に慎重にレビューしてください。",
     ]
 
     with open("PR_BODY.md", "w") as f:
         f.write("\n".join(lines))
 
 
-def _current_pnl(results: list, current_width: float):
+def _current_result(results: list, current_width: float, current_halt: float):
     for r in results:
-        if r["width"] == current_width:
+        if r["width"] == current_width and r["halt_deviation_jpy"] == current_halt:
             return r["total_pnl_jpy"]
     return None
 
@@ -115,18 +141,24 @@ def main():
 
     base_price = args.base_price if args.base_price is not None else trades[-1].price
     current_width = GRID_ENVELOPE.grid_width_default_jpy
+    current_halt = GRID_ENVELOPE.new_order_halt_deviation_jpy
 
-    candidates = compute_width_candidates(GRID_ENVELOPE)
-    results = sweep_grid_width_only(base_price, GRID_ENVELOPE, trades, candidates)
+    width_candidates = compute_width_candidates(GRID_ENVELOPE)
+    halt_candidates = compute_halt_deviation_candidates(GRID_ENVELOPE)
+    results = sweep_grid_width_and_halt(base_price, GRID_ENVELOPE, trades, width_candidates, halt_candidates)
 
     best = results[0]
-    current_pnl = _current_pnl(results, current_width)
+    current_pnl = _current_result(results, current_width, current_halt)
 
-    logger.info(f"現在値: {current_width}円 (PnL={current_pnl})")
-    logger.info(f"最良候補: {best['width']}円 (PnL={best['total_pnl_jpy']})")
+    logger.info(f"現在値: grid_width={current_width}円 halt_deviation={current_halt}円 (PnL={current_pnl})")
+    logger.info(
+        f"最良候補: grid_width={best['width']}円 halt_deviation={best['halt_deviation_jpy']}円 "
+        f"(PnL={best['total_pnl_jpy']})"
+    )
 
+    is_same_combo = best["width"] == current_width and best["halt_deviation_jpy"] == current_halt
     should_propose = False
-    if best["width"] != current_width and current_pnl is not None:
+    if not is_same_combo and current_pnl is not None:
         if current_pnl <= 0:
             # 現在値が赤字の場合、改善率(割合)では判定できないため絶対額で判定する
             should_propose = best["total_pnl_jpy"] > current_pnl + abs(current_pnl) * MIN_IMPROVEMENT_RATIO
@@ -134,9 +166,13 @@ def main():
             should_propose = best["total_pnl_jpy"] >= current_pnl * (1 + MIN_IMPROVEMENT_RATIO)
 
     if should_propose:
-        logger.info(f"改善が見込めるため提案します: {current_width} -> {best['width']}")
-        update_config_file(best["width"])
-        write_pr_body(current_width, current_pnl, best, results, args.trades_csv)
+        logger.info(
+            f"改善が見込めるため提案します: "
+            f"grid_width {current_width}->{best['width']}, "
+            f"halt_deviation {current_halt}->{best['halt_deviation_jpy']}"
+        )
+        update_config_file(best["width"], best["halt_deviation_jpy"])
+        write_pr_body(current_width, current_halt, current_pnl, best, results, args.trades_csv)
         _write_github_output(True)
     else:
         logger.info("有意な改善が見られないため、今回は提案しません。")

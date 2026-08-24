@@ -185,3 +185,18 @@ def test_synthetic_position_still_works_for_positive_net_inventory():
     assert pos is not None
     assert pos.side == "buy"
     assert pos.amount == pytest.approx(10.0)
+
+
+def test_should_halt_new_orders_true_when_deviation_exceeds_threshold():
+    from src.grid_engine import should_halt_new_orders
+    assert should_halt_new_orders(current_price=164.0, base_price=159.61, halt_deviation_jpy=4.0) is True
+
+
+def test_should_halt_new_orders_false_when_within_threshold():
+    from src.grid_engine import should_halt_new_orders
+    assert should_halt_new_orders(current_price=162.0, base_price=159.61, halt_deviation_jpy=4.0) is False
+
+
+def test_should_halt_new_orders_symmetric_for_downside():
+    from src.grid_engine import should_halt_new_orders
+    assert should_halt_new_orders(current_price=155.0, base_price=159.61, halt_deviation_jpy=4.0) is True

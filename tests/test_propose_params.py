@@ -1,10 +1,10 @@
 import os
-import tempfile
 
 import pytest
 
 from src.propose_params import (
-    compute_width_candidates, update_config_file, write_pr_body, _current_pnl, _write_github_output,
+    compute_width_candidates, compute_halt_deviation_candidates,
+    update_config_file, write_pr_body, _current_result, _write_github_output,
 )
 from src.config import GridEnvelopeConfig
 
@@ -17,36 +17,55 @@ def test_compute_width_candidates_covers_envelope_range():
     assert 0.8 in candidates
 
 
-def test_current_pnl_finds_matching_width():
-    results = [{"width": 0.5, "total_pnl_jpy": 10.0}, {"width": 0.8, "total_pnl_jpy": 20.0}]
-    assert _current_pnl(results, 0.8) == 20.0
-    assert _current_pnl(results, 0.3) is None
+def test_compute_halt_deviation_candidates_covers_envelope_range():
+    cfg = GridEnvelopeConfig(new_order_halt_deviation_min_jpy=2.0, new_order_halt_deviation_max_jpy=6.0)
+    candidates = compute_halt_deviation_candidates(cfg)
+    assert candidates[0] == pytest.approx(2.0)
+    assert candidates[-1] == pytest.approx(6.0)
+    assert 4.0 in candidates
 
 
-def test_update_config_file_replaces_grid_width_default(tmp_path, monkeypatch):
+def test_current_result_finds_matching_combo():
+    results = [
+        {"width": 0.5, "halt_deviation_jpy": 2.0, "total_pnl_jpy": 10.0},
+        {"width": 0.8, "halt_deviation_jpy": 4.0, "total_pnl_jpy": 20.0},
+    ]
+    assert _current_result(results, 0.8, 4.0) == 20.0
+    assert _current_result(results, 0.3, 4.0) is None
+
+
+def test_update_config_file_replaces_both_fields(tmp_path, monkeypatch):
     fake_config = tmp_path / "config.py"
     fake_config.write_text(
         "grid_width_min_jpy: float = 0.6\n"
         "grid_width_max_jpy: float = 1.0\n"
         "grid_width_default_jpy: float = 0.8\n"
+        "new_order_halt_deviation_min_jpy: float = 2.0\n"
+        "new_order_halt_deviation_max_jpy: float = 6.0\n"
+        "new_order_halt_deviation_jpy: float = 4.0\n"
     )
     monkeypatch.setattr("src.propose_params.CONFIG_PATH", str(fake_config))
 
-    update_config_file(0.9)
+    update_config_file(0.9, 5.0)
 
     content = fake_config.read_text()
     assert "grid_width_default_jpy: float = 0.9" in content
-    # 他の行は変更されていないこと
+    assert "new_order_halt_deviation_jpy: float = 5.0" in content
+    # envelope自体は変更されていないこと
     assert "grid_width_min_jpy: float = 0.6" in content
+    assert "new_order_halt_deviation_min_jpy: float = 2.0" in content
 
 
 def test_write_pr_body_creates_file_with_expected_content(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     results = [
-        {"width": 0.8, "total_pnl_jpy": 100.0, "net_inventory_xrp": 0.0, "fills": 20},
-        {"width": 1.0, "total_pnl_jpy": 150.0, "net_inventory_xrp": 0.0, "fills": 12},
+        {"width": 0.8, "halt_deviation_jpy": 4.0, "total_pnl_jpy": 100.0, "net_inventory_xrp": 0.0, "fills": 20},
+        {"width": 1.0, "halt_deviation_jpy": 3.0, "total_pnl_jpy": 150.0, "net_inventory_xrp": 0.0, "fills": 12},
     ]
-    write_pr_body(current_width=0.8, current_pnl=100.0, best=results[1], all_results=results, trades_csv="data/x.csv")
+    write_pr_body(
+        current_width=0.8, current_halt=4.0, current_pnl=100.0,
+        best=results[1], all_results=results, trades_csv="data/x.csv",
+    )
 
     body = (tmp_path / "PR_BODY.md").read_text()
     assert "自動マージされません" in body
@@ -57,8 +76,11 @@ def test_write_pr_body_creates_file_with_expected_content(tmp_path, monkeypatch)
 
 def test_write_pr_body_handles_zero_current_pnl_without_crashing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    results = [{"width": 0.8, "total_pnl_jpy": 0.0, "net_inventory_xrp": 0.0, "fills": 0}]
-    write_pr_body(current_width=0.8, current_pnl=0.0, best=results[0], all_results=results, trades_csv="data/x.csv")
+    results = [{"width": 0.8, "halt_deviation_jpy": 4.0, "total_pnl_jpy": 0.0, "net_inventory_xrp": 0.0, "fills": 0}]
+    write_pr_body(
+        current_width=0.8, current_halt=4.0, current_pnl=0.0,
+        best=results[0], all_results=results, trades_csv="data/x.csv",
+    )
     body = (tmp_path / "PR_BODY.md").read_text()
     assert "算出不可" in body
 
@@ -77,7 +99,6 @@ def test_main_proposes_when_improvement_exceeds_threshold(tmp_path, monkeypatch)
     import csv
     from src import propose_params
 
-    # 適当な擬似トレードデータ(下落トレンド)を用意
     trades_csv = tmp_path / "trades.csv"
     with open(trades_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["timestamp", "side", "price", "amount"])
@@ -92,7 +113,10 @@ def test_main_proposes_when_improvement_exceeds_threshold(tmp_path, monkeypatch)
     fake_config.write_text(
         "grid_width_min_jpy: float = 0.6\n"
         "grid_width_max_jpy: float = 1.0\n"
-        "grid_width_default_jpy: float = 0.6\n"  # 意図的に不利そうな値からスタート
+        "grid_width_default_jpy: float = 0.6\n"
+        "new_order_halt_deviation_min_jpy: float = 2.0\n"
+        "new_order_halt_deviation_max_jpy: float = 6.0\n"
+        "new_order_halt_deviation_jpy: float = 2.0\n"
     )
     monkeypatch.setattr(propose_params, "CONFIG_PATH", str(fake_config))
     monkeypatch.chdir(tmp_path)
@@ -107,11 +131,14 @@ def test_main_proposes_when_improvement_exceeds_threshold(tmp_path, monkeypatch)
     propose_params.main()
 
     output_content = output_file.read_text()
-    # 改善が見つかった場合は proposal_needed=true になり、config.pyとPR_BODY.mdが更新される
     if "proposal_needed=true" in output_content:
         assert (tmp_path / "PR_BODY.md").exists()
         updated_config = fake_config.read_text()
-        assert "grid_width_default_jpy: float = 0.6" not in updated_config
+        changed = (
+            "grid_width_default_jpy: float = 0.6" not in updated_config
+            or "new_order_halt_deviation_jpy: float = 2.0" not in updated_config
+        )
+        assert changed
     else:
         assert "proposal_needed=false" in output_content
 

@@ -235,3 +235,63 @@ def test_sweep_grid_width_only_returns_sorted_results():
     pnls = [r["total_pnl_jpy"] for r in results]
     assert pnls == sorted(pnls, reverse=True)
     assert {r["width"] for r in results} == {0.3, 0.5, 0.8}
+
+
+def test_run_simulation_with_halt_suppresses_replenishment_during_deviation():
+    from src.paper_trading import run_simulation_with_halt, Trade
+    from src.config import GridEnvelopeConfig
+
+    # grid幅を広く取り、初回の約定自体がすでにhalt閾値を超える乖離になるよう設計する
+    cfg = GridEnvelopeConfig(
+        grid_width_default_jpy=5.0, max_buy_levels=1, max_sell_levels=1,
+        amount_per_level_xrp=8.0, new_order_halt_deviation_jpy=4.0,
+    )
+    # 初期グリッド: base_price=100 → sell@105, buy@95
+    trades = [
+        Trade(timestamp=0.0, side="buy", price=105.5, amount=50.0),   # sell@105を約定(乖離5.5>=4、halted状態での約定)
+        Trade(timestamp=1.0, side="sell", price=99.5, amount=50.0),   # ミラー(buy@100)が存在すれば約定するはずの価格
+    ]
+
+    fills_halted = run_simulation_with_halt(base_price=100.0, cfg=cfg, trades=iter(trades))
+    fills_unhalted = run_simulation_with_halt(
+        base_price=100.0, cfg=cfg, trades=iter(trades), halt_deviation_jpy=1000.0,  # 実質無効化
+    )
+
+    # halt有効時: 初回の約定のみ(ミラーが作られないため2件目は約定しない)
+    assert len(fills_halted) == 1
+    # halt無効時: ミラー(buy@100)が作られ、2件目のtradeでも約定する
+    assert len(fills_unhalted) == 2
+
+
+def test_run_simulation_with_halt_uses_config_default_when_not_specified():
+    from src.paper_trading import run_simulation_with_halt, Trade
+    from src.config import GridEnvelopeConfig
+
+    cfg = GridEnvelopeConfig(new_order_halt_deviation_jpy=2.0, max_buy_levels=1, max_sell_levels=1, amount_per_level_xrp=8.0)
+    trades = [Trade(timestamp=0.0, side="sell", price=97.0, amount=50.0)]  # 乖離3円 > 閾値2円
+
+    fills = run_simulation_with_halt(base_price=100.0, cfg=cfg, trades=iter(trades))
+    # 初期グリッドの約定自体は起きる(初期発注は事前生成済みのため)。再投入されないことを別途確認
+    assert len(fills) == 1
+
+
+def test_sweep_grid_width_and_halt_returns_sorted_2d_results():
+    from src.paper_trading import sweep_grid_width_and_halt, Trade
+    from src.config import GridEnvelopeConfig
+
+    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=8.0)
+    trades = [
+        Trade(timestamp=float(i), side="sell" if i % 2 == 0 else "buy", price=100.0 - i * 0.05, amount=50.0)
+        for i in range(200)
+    ]
+
+    results = sweep_grid_width_and_halt(
+        base_price=100.0, base_cfg=cfg, trades_list=trades,
+        widths=[0.5, 0.8], halt_deviations=[2.0, 4.0],
+    )
+
+    assert len(results) == 4  # 2 widths x 2 halt_deviations
+    pnls = [r["total_pnl_jpy"] for r in results]
+    assert pnls == sorted(pnls, reverse=True)
+    combos = {(r["width"], r["halt_deviation_jpy"]) for r in results}
+    assert combos == {(0.5, 2.0), (0.5, 4.0), (0.8, 2.0), (0.8, 4.0)}
