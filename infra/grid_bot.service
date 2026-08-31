@@ -23,10 +23,10 @@ WorkingDirectory=/home/ec2-user/grid_bot
 EnvironmentFile=/home/ec2-user/grid_bot/.env
 
 # --- 初回は必ずこちらのdry-run版で動作確認すること ---
-ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 -m src.run_loop --pair xrp_jpy --poll-interval 10 --use-dynamodb --use-websocket --max-iterations 0
+#ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 -m src.run_loop --pair xrp_jpy --poll-interval 10 --use-dynamodb --use-websocket --max-iterations 0
 
 # --- 動作確認後、本番投入する場合は上のExecStartをコメントアウトし、以下を使う ---
-# ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 -m src.run_loop --pair xrp_jpy --poll-interval 10 --use-dynamodb --use-websocket --max-iterations 0 --live --yes
+ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 -m src.run_loop --pair xrp_jpy --poll-interval 10 --use-dynamodb --use-websocket --max-iterations 0 --live --yes
 
 Restart=on-failure
 RestartSec=30
