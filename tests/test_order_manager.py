@@ -180,22 +180,40 @@ def test_apply_hard_stop_loss_full_close_cancels_orders_when_live():
 def test_dynamodb_list_open_orders_skips_portfolio_state_sentinel():
     """
     DynamoDBStateStoreの同一テーブル設計に起因するバグの回帰テスト。
-    __PORTFOLIO_STATE__レコード(stateキーを持たない)がscan結果に
+    __PORTFOLIO_STATE__レコード(stateキーを持たない)がGSI query結果に
     混在していてもlist_open_ordersがKeyErrorを起こさないことを確認する。
+
+    list_open_ordersはGSI(state-created_at-index)への query()を
+    OrderState.PENDING/OPENそれぞれについて呼び出す実装のため、
+    query()の戻り値を state引数に応じて出し分けるside_effectでモックする。
+    (以前はscan()を1回呼ぶだけだったが、1MB制限による取りこぼしを防ぐため
+    query()+ページネーションに変更した際の回帰テストとして更新)
     """
     from unittest.mock import patch, MagicMock
     from src.state_store import DynamoDBStateStore
 
     fake_table = MagicMock()
-    fake_table.scan.return_value = {
-        "Items": [
-            {"request_id": "__PORTFOLIO_STATE__", "cash_flow": "-123.45", "net_inventory": "8.0"},
-            {
-                "request_id": "r1", "pair": "xrp_jpy", "side": "buy",
-                "price": "100.0", "amount": "8.0", "state": "OPEN", "exchange_order_id": "999",
-            },
-        ]
-    }
+
+    def fake_query(**kwargs):
+        # KeyConditionExpressionの内部表現から対象stateを取り出すのは煩雑なため、
+        # 呼び出し回数で判定する(PENDING→OPENの順に呼ばれる実装に依存)。
+        fake_query.call_count += 1
+        if fake_query.call_count == 1:
+            # PENDING: 該当なし
+            return {"Items": []}
+        else:
+            # OPEN: sentinelレコードと通常レコードが混在
+            return {
+                "Items": [
+                    {"request_id": "__PORTFOLIO_STATE__", "cash_flow": "-123.45", "net_inventory": "8.0", "state": "OPEN"},
+                    {
+                        "request_id": "r1", "pair": "xrp_jpy", "side": "buy",
+                        "price": "100.0", "amount": "8.0", "state": "OPEN", "exchange_order_id": "999",
+                    },
+                ]
+            }
+    fake_query.call_count = 0
+    fake_table.query.side_effect = fake_query
 
     with patch("boto3.resource") as mock_resource:
         mock_resource.return_value.Table.return_value = fake_table
