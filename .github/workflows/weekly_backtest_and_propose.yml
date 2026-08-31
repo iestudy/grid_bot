@@ -68,7 +68,7 @@ jobs:
         id: create-pr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PARAM_PROPOSAL_PAT }}
           commit-message: "chore(params): 週次バックテストによるgrid_width/halt_deviation調整提案"
           branch: auto/weekly-param-proposal
           delete-branch: true
@@ -101,8 +101,33 @@ jobs:
       #   d. 以下のコメントアウトを解除する
       # ==========================================================================
 
-      # - name: Enable auto-merge (要PAT。有効化条件は上記コメント参照)
-      #   if: steps.propose.outputs.proposal_needed == 'true'
-      #   run: gh pr merge --auto --squash "${{ steps.create-pr.outputs.pull-request-number }}"
-      #   env:
-      #     GH_TOKEN: ${{ secrets.PARAM_PROPOSAL_PAT }}
+      - name: Verify proposed values are within envelope (最終防衛ライン)
+        if: steps.propose.outputs.proposal_needed == 'true'
+        run: |
+          python3 - << 'VERIFY_EOF'
+          import sys
+          from src.config import GRID_ENVELOPE
+
+          w = GRID_ENVELOPE.grid_width_default_jpy
+          h = GRID_ENVELOPE.new_order_halt_deviation_jpy
+
+          ok = True
+          if not (GRID_ENVELOPE.grid_width_min_jpy <= w <= GRID_ENVELOPE.grid_width_max_jpy):
+              print(f"NG: grid_width_default_jpy={w} がenvelope範囲外です", file=sys.stderr)
+              ok = False
+          if not (GRID_ENVELOPE.new_order_halt_deviation_min_jpy <= h <= GRID_ENVELOPE.new_order_halt_deviation_max_jpy):
+              print(f"NG: new_order_halt_deviation_jpy={h} がenvelope範囲外です", file=sys.stderr)
+              ok = False
+
+          if not ok:
+              print("envelope範囲チェックに失敗したため、自動マージを中止します。", file=sys.stderr)
+              sys.exit(1)
+          print(f"OK: grid_width={w} (envelope {GRID_ENVELOPE.grid_width_min_jpy}-{GRID_ENVELOPE.grid_width_max_jpy}), "
+                f"halt_deviation={h} (envelope {GRID_ENVELOPE.new_order_halt_deviation_min_jpy}-{GRID_ENVELOPE.new_order_halt_deviation_max_jpy})")
+          VERIFY_EOF
+
+      - name: Enable auto-merge (要PAT。有効化条件は上記コメント参照。envelope検証通過後のみ)
+        if: steps.propose.outputs.proposal_needed == 'true'
+        run: gh pr merge --auto --squash "${{ steps.create-pr.outputs.pull-request-number }}"
+        env:
+          GH_TOKEN: ${{ secrets.PARAM_PROPOSAL_PAT }}
