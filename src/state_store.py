@@ -12,6 +12,7 @@
 """
 
 import uuid
+from datetime import datetime, timezone
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -35,6 +36,7 @@ class OrderRecord:
     amount: float
     state: OrderState
     exchange_order_id: Optional[str] = None
+    created_at: str = ""     # ISO8601形式。GSI(state, created_at)のソートキー用
 
 
 @dataclass
@@ -171,6 +173,7 @@ class DynamoDBStateStore(StateStore):
         self._table = boto3.resource("dynamodb", region_name=region_name).Table(table_name)
 
     def save_order(self, record: OrderRecord) -> None:
+        created_at = record.created_at or datetime.now(timezone.utc).isoformat()
         self._table.put_item(Item={
             "request_id": record.request_id,
             "pair": record.pair,
@@ -179,6 +182,7 @@ class DynamoDBStateStore(StateStore):
             "amount": str(record.amount),
             "state": record.state.value,
             "exchange_order_id": record.exchange_order_id or "",
+            "created_at": created_at,
         })
 
     def get_order(self, request_id: str) -> Optional[OrderRecord]:
@@ -194,6 +198,7 @@ class DynamoDBStateStore(StateStore):
             amount=float(item["amount"]),
             state=OrderState(item["state"]),
             exchange_order_id=item.get("exchange_order_id") or None,
+            created_at=item.get("created_at", ""),
         )
 
     # 通常の注文レコード以外に、このテーブルへ同居させている特殊レコードのキー。
@@ -201,24 +206,39 @@ class DynamoDBStateStore(StateStore):
     _SENTINEL_KEYS = {"__PORTFOLIO_STATE__", "__POSITION_LEDGER__", "__DAILY_SNAPSHOT__", "__BASE_PRICE__"}
 
     def list_open_orders(self) -> Dict[str, OrderRecord]:
-        # 件数が少ない前提（3万円運用のgrid本数は数本〜十数本）でscanを許容。
-        # 件数が増える場合はGSI（state, updated_at等）を追加してqueryに切り替えること。
-        resp = self._table.scan()
-        result = {}
-        for item in resp.get("Items", []):
-            if item.get("request_id") in self._SENTINEL_KEYS:
-                continue  # 特殊レコードはstateキーを持たないため除外
-            state = OrderState(item["state"])
-            if state in (OrderState.PENDING, OrderState.OPEN):
-                result[item["request_id"]] = OrderRecord(
-                    request_id=item["request_id"],
-                    pair=item["pair"],
-                    side=item["side"],
-                    price=float(item["price"]),
-                    amount=float(item["amount"]),
-                    state=state,
-                    exchange_order_id=item.get("exchange_order_id") or None,
-                )
+        # GSI(state, created_at)をqueryし、OPEN/PENDINGの各stateごとに
+        # ページネーション(LastEvaluatedKey)を追いながら全件取得する。
+        # scan()は8万件超のFAILEDレコードまで毎回1MB分読みに行ってしまい、
+        # レスポンスサイズ上限で打ち切られ一部のOPENレコードを取りこぼす
+        # 不具合があったため、GSI経由のqueryに置き換えた。
+        from boto3.dynamodb.conditions import Key  # 遅延import(トップレベルimport boto3を避ける設計に合わせる)
+        result: Dict[str, OrderRecord] = {}
+        for target_state in (OrderState.PENDING, OrderState.OPEN):
+            last_evaluated_key = None
+            while True:
+                kwargs = {
+                    "IndexName": "state-created_at-index",
+                    "KeyConditionExpression": Key("state").eq(target_state.value),
+                }
+                if last_evaluated_key:
+                    kwargs["ExclusiveStartKey"] = last_evaluated_key
+                resp = self._table.query(**kwargs)
+                for item in resp.get("Items", []):
+                    if item.get("request_id") in self._SENTINEL_KEYS:
+                        continue
+                    result[item["request_id"]] = OrderRecord(
+                        request_id=item["request_id"],
+                        pair=item["pair"],
+                        side=item["side"],
+                        price=float(item["price"]),
+                        amount=float(item["amount"]),
+                        state=OrderState(item["state"]),
+                        exchange_order_id=item.get("exchange_order_id") or None,
+                        created_at=item.get("created_at", ""),
+                    )
+                last_evaluated_key = resp.get("LastEvaluatedKey")
+                if not last_evaluated_key:
+                    break
         return result
 
     def update_state(self, request_id: str, state: OrderState, exchange_order_id: Optional[str] = None) -> None:
