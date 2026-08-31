@@ -185,7 +185,7 @@ def run_loop(
                 )
             else:
                 try:
-                    placed = sync_grid_orders(client, store, pair, desired_levels, dry_run=dry_run)
+                    placed = sync_grid_orders(client, store, pair, desired_levels, current_price=current_price, dry_run=dry_run)
                     if placed:
                         logger.info(f"新規発注: {placed}件")
                 except Exception as e:

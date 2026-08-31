@@ -215,6 +215,7 @@ def sync_grid_orders(
     store: StateStore,
     pair: str,
     desired_levels: List[GridLevel],
+    current_price: Optional[float] = None,
     dry_run: bool = True,
     min_interval_sec: float = 0.3,
 ) -> int:
@@ -222,6 +223,14 @@ def sync_grid_orders(
     望ましいグリッド(desired_levels)のうち、現在OPENでない(価格・方向が一致する
     注文が無い)ものだけを新規発注する。過剰発注を防ぐため、同一price+sideの
     組み合わせが既にOPENなら発注をスキップする。
+
+    current_priceを渡した場合、post_only注文が取引所に即時拒否される価格
+    (買いなら現在価格以上、売りなら現在価格以下)のレベルは発注自体をスキップする。
+    post_only拒否は取引所側でCANCELED_UNFILLEDとして即キャンセルされるため、
+    このガードが無いと「発注→即キャンセル→次周期でまた発注」という無意味な
+    ループでAPIコールを消費し続けてしまう(実際に80,000件超のFAILEDレコードが
+    蓄積する原因となった)。current_priceは目安であり、実際の板の反対側気配とは
+    ずれる場合があるため、あくまで明らかに矛盾する価格だけを弾く安全側の判定とする。
 
     min_interval_sec: 連続発注の間隔(秒)。bitbankのレート制限に配慮した
     プロアクティブなスロットリング。個別発注側の指数バックオフ(429対応)と
@@ -240,6 +249,19 @@ def sync_grid_orders(
         key = (level.side, round(level.price, 4))
         if key in existing_keys:
             continue
+        if current_price is not None:
+            if level.side == "buy" and level.price >= current_price:
+                logger.warning(
+                    f"post_only拒否見込みのためスキップ: buy {level.amount}@{level.price} "
+                    f"(現在価格={current_price}以上のため即キャンセルされる可能性)"
+                )
+                continue
+            if level.side == "sell" and level.price <= current_price:
+                logger.warning(
+                    f"post_only拒否見込みのためスキップ: sell {level.amount}@{level.price} "
+                    f"(現在価格={current_price}以下のため即キャンセルされる可能性)"
+                )
+                continue
         if placed_count > 0 and not dry_run:
             time.sleep(min_interval_sec)
         place_grid_level(client, store, pair, level, dry_run=dry_run)
