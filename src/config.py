@@ -43,7 +43,7 @@ class GridEnvelopeConfig:
 
     # 1レベルあたりの数量(XRP)。実際の保有資産(JPY自由残高・XRP保有量)から逆算した初期値。
     # 口座残高が変わったら、estimate_total_capital_jpy()の結果を見ながら調整すること。
-    amount_per_level_xrp: float = 4.5
+    amount_per_level_xrp: float = 8.1
 
     # base_priceからの片道乖離がこの値以上になったら、新規発注(sync_grid_orders)を
     # 一時停止する(既存注文はそのまま、HardStopLossManagerの判定・キャンセルも
