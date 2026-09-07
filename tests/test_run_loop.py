@@ -348,12 +348,22 @@ def test_run_loop_halts_new_orders_when_deviation_exceeds_threshold():
     """
     案4: base_priceからの片道乖離が閾値を超えたら新規発注を停止する。
     既存注文には影響しないことも確認する。
+
+    閾値(GRID_ENVELOPE.new_order_halt_deviation_jpy)は週次バックテストの
+    Tier1自動マージで変動しうるため、ハードコードした乖離幅を使わず、
+    設定値から確実に閾値を超える乖離を動的に算出する
+    (固定値を使うと、閾値がその値を上回るよう変更された際にテストが
+    意図せず無効化されてしまう回帰があったため)。
     """
     from unittest.mock import patch
     from src.state_store import InMemoryStateStore, OrderRecord, OrderState
+    from src.config import GRID_ENVELOPE
 
-    # base_price=159.61に対し、乖離4.0円(デフォルト閾値)を明確に超える163.7を使う
-    client = make_mock_client(last_price=163.7)
+    base_price = 159.61
+    deviation = GRID_ENVELOPE.new_order_halt_deviation_jpy + 1.0  # 閾値を確実に超える
+    last_price = base_price + deviation
+
+    client = make_mock_client(last_price=last_price)
     client.get_active_orders.return_value = {"orders": [{"order_id": 999}]}
     store = InMemoryStateStore()
     store.save_order(OrderRecord(
@@ -363,7 +373,7 @@ def test_run_loop_halts_new_orders_when_deviation_exceeds_threshold():
 
     with patch("src.run_loop.sync_grid_orders") as mock_sync:
         run_loop(
-            client=client, store=store, pair="xrp_jpy", base_price=159.61,
+            client=client, store=store, pair="xrp_jpy", base_price=base_price,
             poll_interval_sec=0, max_iterations=2, dry_run=False,
         )
 
@@ -375,14 +385,22 @@ def test_run_loop_halts_new_orders_when_deviation_exceeds_threshold():
 def test_run_loop_places_new_orders_when_within_deviation_threshold():
     from unittest.mock import patch
     from src.state_store import InMemoryStateStore
+    from src.config import GRID_ENVELOPE
 
-    client = make_mock_client(last_price=160.0)  # base_priceから0.39円、閾値内
+    # 閾値がTier1自動マージで変動しても確実に「閾値内」となるよう、
+    # 閾値の半分未満の乖離を動的に算出する(固定値0.39円は閾値の変更で
+    # 意図せず「閾値外」側に転じ、テストが壊れる回帰があったため)。
+    base_price = 159.61
+    deviation = GRID_ENVELOPE.new_order_halt_deviation_jpy / 2
+    last_price = base_price + deviation
+
+    client = make_mock_client(last_price=last_price)
     client.get_active_orders.return_value = {"orders": []}
     store = InMemoryStateStore()
 
     with patch("src.run_loop.sync_grid_orders", return_value=0) as mock_sync:
         run_loop(
-            client=client, store=store, pair="xrp_jpy", base_price=159.61,
+            client=client, store=store, pair="xrp_jpy", base_price=base_price,
             poll_interval_sec=0, max_iterations=1, dry_run=False,
         )
 
