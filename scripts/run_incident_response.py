@@ -52,13 +52,20 @@ def _is_read_only(cmd):
     return False
 
 
+def _is_notify_script(cmd):
+    return cmd[:2] == [VENV_PYTHON, "scripts/notify_incident.py"]
+
+
 def run(cmd, **kwargs):
     """subprocessをラップし、stdout/stderr/returncodeを記録しながら実行する。
     DRY_RUN時は読み取り専用コマンド(incident_check.py, git status/diff等)以外を
     実際には実行せず、疑似的な成功結果を返す。
     """
     is_check_script = cmd[:2] == [VENV_PYTHON, "scripts/incident_check.py"]
-    if DRY_RUN and not is_check_script and not _is_read_only(cmd):
+    # notify_incident.pyはdry-run時も実際に送信する([DRY RUN]ラベルを付けて
+    # 送るのがnotify()関数側の責務。ここでスキップすると通知そのものが
+    # 届かなくなり、dry-runの動作確認自体ができなくなってしまう)
+    if DRY_RUN and not is_check_script and not _is_read_only(cmd) and not _is_notify_script(cmd):
         print(f"$ {' '.join(cmd)}  [DRY RUN: 実行スキップ]", file=sys.stderr)
         return _DRY_RUN_RESULT
 

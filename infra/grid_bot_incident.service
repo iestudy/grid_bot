@@ -1,0 +1,24 @@
+# /etc/systemd/system/grid_bot_incident.service として配置する。
+#
+# grid_bot_incident.path から起動される。EMERGENCY_STOP後のインシデント
+# 自動対応(scripts/run_incident_response.py)を実行し、完了後は
+# 再トリガーを防ぐためフラグファイルを削除する。
+#
+# 重要: このserviceはgrid_botとは独立したunitであり、grid_bot.service自体を
+# 起動しない。再開の要否・タイミングはrun_incident_response.py内の判断
+# (auto_recover/escalate)に委ねる。
+
+[Unit]
+Description=grid_bot EMERGENCY_STOP incident auto-response
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/grid_bot
+EnvironmentFile=/home/ec2-user/grid_bot/.env
+ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 scripts/run_incident_response.py
+ExecStartPost=/usr/bin/rm -f /home/ec2-user/grid_bot/run/emergency_stop.flag
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grid_bot_incident

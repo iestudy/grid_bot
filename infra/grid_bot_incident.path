@@ -1,0 +1,15 @@
+# /etc/systemd/system/grid_bot_incident.path として配置する。
+#
+# grid_bot.serviceがEMERGENCY_STOPで終了する際に書き出す
+# run/emergency_stop.flag の出現を監視し、出現したら
+# grid_bot_incident.service を起動する。
+
+[Unit]
+Description=Watch for grid_bot EMERGENCY_STOP flag file
+
+[Path]
+PathExists=/home/ec2-user/grid_bot/run/emergency_stop.flag
+Unit=grid_bot_incident.service
+
+[Install]
+WantedBy=multi-user.target
