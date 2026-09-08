@@ -25,7 +25,11 @@ def load_env(env_path: Path) -> dict:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        env[key.strip()] = value.strip()
+        value = value.strip()
+        # .envの値がクォートで囲まれている場合(例: KEY="value")は剥がす
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        env[key.strip()] = value
     return env
 
 
