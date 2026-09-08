@@ -52,3 +52,25 @@ def test_notify_emergency_sends_expected_content():
     args, kwargs = mock_post.call_args
     assert "FULL_CLOSE" in kwargs["json"]["text"]
     assert "🚨" in kwargs["json"]["text"]
+
+
+def test_notify_incident_response_sends_summary_with_marker():
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/dummy")
+    with patch("requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200)
+        notifier.notify_incident_response("トリガー: EMERGENCY_STOP\n実施内容: reset_state.py実行")
+
+    args, kwargs = mock_post.call_args
+    assert "インシデント自動対応" in kwargs["json"]["text"]
+    assert "reset_state.py実行" in kwargs["json"]["text"]
+
+
+def test_notify_incident_escalation_sends_summary_with_marker():
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/dummy")
+    with patch("requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200)
+        notifier.notify_incident_escalation("エスカレーション理由: 帳簿乖離が閾値超過")
+
+    args, kwargs = mock_post.call_args
+    assert "要人手対応" in kwargs["json"]["text"]
+    assert "帳簿乖離が閾値超過" in kwargs["json"]["text"]

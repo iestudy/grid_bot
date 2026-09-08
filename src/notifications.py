@@ -57,3 +57,20 @@ class SlackNotifier:
             f"botは自動停止しました。人間のレビューが必要です。"
         )
         return self._send(text)
+
+    def notify_incident_response(self, summary: str) -> bool:
+        """
+        EMERGENCY_STOP後の自動対応(Claude Code経由)が完了した際の報告。
+        summaryはdocs/incident_response_runbook.mdで定めたフォーマット
+        (トリガー・実施内容・実残高・判断根拠)に沿った本文をそのまま渡す想定。
+        """
+        text = f"🤖 [インシデント自動対応]\n{summary}"
+        return self._send(text)
+
+    def notify_incident_escalation(self, summary: str) -> bool:
+        """
+        EMERGENCY_STOP後の自動対応がエスカレーション条件に該当し、
+        人手対応が必要と判断された際の報告。
+        """
+        text = f"⚠️ [要人手対応]\n{summary}"
+        return self._send(text)
