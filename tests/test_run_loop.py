@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -60,6 +61,36 @@ def test_run_loop_stops_on_emergency_stop():
 
     # EMERGENCY_STOPで即座にbreakするため、10回未満で終わっているはず
     assert client.get_ticker.call_count < 10
+
+
+def test_run_loop_writes_emergency_stop_flag_file(tmp_path, monkeypatch):
+    """
+    EMERGENCY_STOP発動時、run_incident_response.pyのトリガーとなる
+    フラグファイルが書き出されることを確認する(FULL_CLOSEでは書き出さない)。
+    """
+    import src.run_loop as run_loop_module
+    from src.state_store import PortfolioState
+
+    flag_path = tmp_path / "run" / "emergency_stop.flag"
+    monkeypatch.setattr(run_loop_module, "EMERGENCY_STOP_FLAG_PATH", flag_path)
+
+    client = make_mock_client(last_price=100.0)
+    client.get_active_orders.return_value = {"orders": []}
+    client.create_order.return_value = {"order_id": 1, "status": "FULLY_FILLED"}
+    store = InMemoryStateStore()
+    store.save_portfolio_state(PortfolioState(cash_flow=0.0, net_inventory=0.0))
+    client.get_ticker.return_value = {"data": {"last": "50.0", "buy": "49.999", "sell": "50.001"}}
+
+    run_loop(
+        client=client, store=store, pair="xrp_jpy", base_price=100.0,
+        poll_interval_sec=0, max_iterations=10, dry_run=False,
+    )
+
+    assert flag_path.exists()
+    payload = json.loads(flag_path.read_text())
+    assert payload["action"] == "EMERGENCY_STOP"
+    assert payload["current_price"] == 50.0
+    assert "triggered_at" in payload
 
 
 def test_run_loop_triggers_base_price_drift_when_grid_empty_on_one_side():

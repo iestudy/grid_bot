@@ -18,10 +18,13 @@
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from .bitbank_client import BitbankClient
 from .state_store import InMemoryStateStore, DynamoDBStateStore
@@ -33,6 +36,32 @@ from .hard_stop_loss import HardStopLossManager, Action
 from .order_manager import reconcile_orders, apply_hard_stop_loss, sync_grid_orders
 from .position_ledger import PositionLedger
 from .notifications import SlackNotifier
+
+# EMERGENCY_STOP発動時に書き出すフラグファイル。
+# systemdのpath unit(grid_bot_incident.path)がこのファイルの出現を監視し、
+# インシデント自動対応(run_incident_response.py)を起動する。
+EMERGENCY_STOP_FLAG_PATH = Path(__file__).resolve().parent.parent / "run" / "emergency_stop.flag"
+
+
+def _write_emergency_stop_flag(action: str, current_price: float, unrealized_pnl_jpy: float) -> None:
+    """EMERGENCY_STOP発動時の状況をフラグファイルに書き出す。
+
+    書き出し自体が失敗しても(ディスク容量不足等)、ループの終了処理自体は
+    継続させる。フラグファイルはトリガーとして使われるのみで、実際の判断材料は
+    run_incident_response.pyがincident_check.pyで別途取得するため、
+    このファイルの内容自体が不正確でも実害はない。
+    """
+    try:
+        EMERGENCY_STOP_FLAG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "action": action,
+            "current_price": current_price,
+            "unrealized_pnl_jpy": unrealized_pnl_jpy,
+            "triggered_at": datetime.now(timezone.utc).isoformat(),
+        }
+        EMERGENCY_STOP_FLAG_PATH.write_text(json.dumps(payload, ensure_ascii=False))
+    except Exception as e:
+        logging.getLogger(__name__).error(f"EMERGENCY_STOPフラグファイルの書き出しに失敗しました: {e}")
 from .config import GRID_ENVELOPE, HARD_STOP_LOSS
 
 logging.basicConfig(
@@ -153,6 +182,8 @@ def run_loop(
                 portfolio_snapshot = store.get_portfolio_state()
                 unrealized = portfolio_snapshot.cash_flow + portfolio_snapshot.net_inventory * current_price
                 notifier.notify_emergency(action.value, current_price, unrealized)
+                if action == Action.EMERGENCY_STOP:
+                    _write_emergency_stop_flag(action.value, current_price, unrealized)
                 break
 
             # --- base_price自動ドリフト補正 ---
