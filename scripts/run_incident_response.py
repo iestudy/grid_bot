@@ -115,6 +115,22 @@ def main():
         print("エスカレーションしました。自動対応は行っていません。", file=sys.stderr)
         return
 
+    # --- action == auto_recover に進む前に、作業ツリーがクリーンであることを確認 ---
+    # (git checkout main等が途中で失敗すると、中途半端な状態で処理が止まる
+    #  リスクがあるため、事前に検知してエスカレーションする)
+    status_check = run(["git", "status", "--porcelain"])
+    if status_check.stdout.strip():
+        summary = (
+            f"{timestamp}\n"
+            f"判断: 自動復旧可能と判定されたが、作業ツリーに未コミットの変更が"
+            f"残っているため安全のためエスカレーション\n"
+            f"git status --porcelain:\n{status_check.stdout}\n"
+            f"元の判断根拠: {decision['reasoning']}"
+        )
+        notify("escalation", summary)
+        print("作業ツリーが汚れているためエスカレーションしました。", file=sys.stderr)
+        return
+
     # --- action == auto_recover: Step 2以降を決定的に実行 ---
     executed_steps = []
 
