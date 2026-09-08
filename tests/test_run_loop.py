@@ -41,8 +41,11 @@ def test_run_loop_respects_max_iterations():
     assert client.get_ticker.call_count == 3
 
 
-def test_run_loop_stops_on_emergency_stop():
+def test_run_loop_stops_on_emergency_stop(tmp_path, monkeypatch):
+    import src.run_loop as run_loop_module
     from src.state_store import PortfolioState
+
+    monkeypatch.setattr(run_loop_module, "EMERGENCY_STOP_FLAG_PATH", tmp_path / "run" / "emergency_stop.flag")
 
     client = make_mock_client(last_price=100.0)
     client.get_active_orders.return_value = {"orders": []}
@@ -279,9 +282,12 @@ def test_run_loop_notifies_round_trip_on_matched_fill():
     assert portfolio.total_fill_count == 2
 
 
-def test_run_loop_notifies_emergency_on_stop():
+def test_run_loop_notifies_emergency_on_stop(tmp_path, monkeypatch):
+    import src.run_loop as run_loop_module
     from unittest.mock import patch, MagicMock
     from src.state_store import InMemoryStateStore
+
+    monkeypatch.setattr(run_loop_module, "EMERGENCY_STOP_FLAG_PATH", tmp_path / "run" / "emergency_stop.flag")
 
     client = make_mock_client(last_price=50.0)  # base_priceから大きく乖離させて緊急停止を誘発
     store = InMemoryStateStore()
