@@ -102,10 +102,18 @@ def main():
     # --- 簡易整合性チェック(判断材料として付与するだけ。ここでは何もアクションしない) ---
     consistency = {}
     if result.get("balances") and result.get("bot_state"):
-        xrp_free = result["balances"].get("xrp", {}).get("free_amount")
+        xrp_balance = result["balances"].get("xrp", {})
+        xrp_free = xrp_balance.get("free_amount")
+        xrp_onhand = xrp_balance.get("onhand_amount")
         net_inventory = result["bot_state"].get("net_inventory")
         if xrp_free is not None and net_inventory is not None:
             consistency["xrp_free_vs_net_inventory_diff"] = round(xrp_free - net_inventory, 6)
+        # net_inventoryが負の値の場合、実際にXRPをどれだけ保有しているか
+        # (onhand_amount、拘束中の分も含む)が「正当な売り越し」か
+        # 「帳簿バグ」かの判定材料になる。ランブックのエスカレーション
+        # 条件2を参照。
+        if xrp_onhand is not None:
+            consistency["xrp_onhand_amount"] = xrp_onhand
     if result.get("active_orders") is not None:
         consistency["active_order_count"] = result["active_orders"]["count"]
     result["consistency"] = consistency

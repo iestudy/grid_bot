@@ -1,8 +1,28 @@
 # EMERGENCY_STOP インシデント対応ランブック
 
 このドキュメントは、grid_botがEMERGENCY_STOPで停止した際の自動復旧判断基準を
-定めたものである。Claude Codeはこのランブックと`scripts/incident_check.py`の
-出力(JSON)をもとに、人手を介さず復旧作業を行う。
+定めたものである。scripts/incident_decide.pyがこのランブックと
+scripts/incident_check.pyの出力(JSON)をClaude API(Messages API)に渡し、
+構造化された判断結果(action/matched_conditions/reasoning)を取得する。
+判断はClaude APIが行うが、実際のコマンド実行はscripts/run_incident_response.py
+側の決定的なPythonコードが担う(判断と実行を分離する設計。経緯は本リポジトリの
+開発履歴を参照)。
+
+## 運用上の重要な注意(このシステム自体の保守について)
+
+**src/run_loop.py(EMERGENCY_STOPフラグ書き出しロジックを含む)や
+scripts/run_incident_response.py関連のコードを変更した際は、
+git pull/マージだけでなく、必ず `sudo systemctl restart grid_bot` で
+grid_bot本体のプロセスを再起動すること。**
+
+稼働中のPythonプロセスはメモリ上に読み込んだ古いコードのまま動き続けるため、
+mainへのマージだけでは変更が反映されない。実際に、EMERGENCY_STOP発動時の
+フラグファイル書き出し機能(run/emergency_stop.flag)を実装・マージした後、
+稼働中の古いbotプロセスを再起動しないままEMERGENCY_STOPが発生し、
+フラグファイルが書き出されず自動対応が一切トリガーされない、という
+インシデントが実際に発生した(2026-09-08)。この場合、systemdのpath unit
+(grid_bot_incident.path)自体は正常だったが、そもそもトリガーとなる
+イベント(フラグファイル書き出し)が起きなかったため、何も検知できなかった。
 
 ## 前提として理解しておくこと
 
@@ -50,19 +70,36 @@
    通常運用そのものであり、この差分33XRPだけを見てエスカレーションするのは
    誤判定である。)
 
-   エスカレーションすべきなのは、以下のような「帳簿バグ再発」を示す
-   異常パターンに該当する場合のみ:
-   - net_inventoryが負の値になっている、かつその絶対値が
-     amount_per_level_xrp(config.py参照)の2倍を超える
-     (現物取引ではnet_inventoryが負になること自体、通常はbot起動後の
-     累積売り越しでしか起こらず、想定を超える負の大きさは異常。
-     過去に-48XRP・-94.5XRPのような値が発生したことがあり、これは
-     reconcileの取りこぼしや二重計上が原因だった)
+   net_inventoryが負の値であること自体は、上昇トレンド相場でグリッドの
+   売り注文が連続約定し、保有していたXRP在庫を売り切った結果として
+   普通に起こりうる(2026-09-08の実例: net_inventory=-72.9XRP、
+   実際のXRP free残高は0.6XRPとほぼ完全に枯渇。直近30件の取引履歴でも
+   buy 105.3XRP/sell 162.0XRPと売り越しが継続しており、取引履歴と
+   帳簿の値は整合していた。この時のClaudeの一次判断は「絶対値が
+   amount_per_level_xrpの2倍を超える負の値」という基準のみでエスカレー
+   ションしたが、実際には帳簿バグではなく正当な状態だった)。
+
+   したがって、net_inventoryが負の値であることの評価は、実残高
+   (balances.xrp.onhand_amount)と突き合わせて行うこと:
+
+   - **正当なパターン(自動復旧してよい)**: net_inventoryが負の値で、
+     かつ実際のXRP保有量(onhand_amount)がゼロに近い(目安:
+     amount_per_level_xrp未満程度)。これは「保有していた分をほぼ
+     全て売り切った」という、値の大きさに関わらず筋の通る状態。
+   - **異常なパターン(エスカレーションすべき)**: net_inventoryが
+     負の値で、かつ実際のXRP保有量がまとまった量(目安:
+     amount_per_level_xrpの2倍以上)残っている。この場合、
+     「売った記録はあるのに手元にXRPも相応に残っている」ことになり、
+     帳簿と実態が矛盾する。過去に-48XRP・-94.5XRPのような値が
+     reconcileの取りこぼしや二重計上で発生したことがあり、そのときは
+     実残高と帳簿の乖離が伴っていた。
+
+   上記に加え、以下もエスカレーション対象とする:
    - active_orders.countとbot側が把握している未約定注文数が一致しない
      ことが別途判明している場合
-   - 上記いずれにも該当しないが、net_inventoryの値が直前の既知の状態
-     (前回のreset_state.py実行時=0)から、実際の取引ログでは説明が
-     つかないほど大きく動いている場合
+   - net_inventoryの値が直前の既知の状態(前回のreset_state.py実行時=0)
+     から、実際の取引ログ(bitbank trade_history等)と突き合わせても
+     説明がつかないほど大きく動いている場合
 
 3. 直近24時間以内のEMERGENCY_STOP発生回数が3回以上
    頻発している場合、パラメータやbase_price乖離ロジック自体に問題が
