@@ -22,6 +22,7 @@ EMERGENCY_STOP検知後のインシデント自動対応のオーケストレー
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,21 +92,38 @@ def main():
     incident_json_text = check_result.stdout
 
     # --- 判断 ---
-    decide_result = subprocess.run(
-        [VENV_PYTHON, "scripts/incident_decide.py"],
-        cwd=str(PROJECT_ROOT),
-        input=incident_json_text,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    # incident_decide.py自体の異常(タイムアウト、クラッシュ、不正な出力)は
+    # 全て「判断できない」として安全側のescalateにフォールバックする。
+    # 過去にAnthropic API呼び出しがタイムアウトし、無防備なsubprocess.run()が
+    # 未処理の例外でスクリプト全体をクラッシュさせ、エスカレーション通知すら
+    # 送られないまま終了した事例があったため、ここは広くtry/exceptで囲む。
     try:
+        decide_result = subprocess.run(
+            [VENV_PYTHON, "scripts/incident_decide.py"],
+            cwd=str(PROJECT_ROOT),
+            input=incident_json_text,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         decision = json.loads(decide_result.stdout)
+    except subprocess.TimeoutExpired:
+        decision = {
+            "action": "escalate",
+            "matched_conditions": ["incident_decide.pyがタイムアウトした(120秒)"],
+            "reasoning": "判断スクリプト(Claude API呼び出し)が120秒以内に応答しなかったため、安全側としてエスカレーションします。",
+        }
     except json.JSONDecodeError:
         decision = {
             "action": "escalate",
             "matched_conditions": ["incident_decide.pyの出力がJSONとして解釈できない"],
             "reasoning": f"判断スクリプトの出力異常。stdout: {decide_result.stdout!r} stderr: {decide_result.stderr!r}",
+        }
+    except Exception as e:
+        decision = {
+            "action": "escalate",
+            "matched_conditions": [f"incident_decide.py実行中に予期しない例外: {type(e).__name__}"],
+            "reasoning": f"判断スクリプト実行中に例外が発生したため、安全側としてエスカレーションします: {e}",
         }
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -169,26 +187,88 @@ def main():
     executed_steps.append(f"resize_grid.py --apply: exit={resize_result.returncode}")
 
     # Step 4: git反映
+    #
+    # 各ステップ(特にpush/pr create/pr merge)はネットワーク不調
+    # (TLS handshake timeout等、このEC2環境で実際に発生実績がある)で
+    # 失敗する可能性があるため、必ずreturncodeを確認する。
+    # 失敗を握り消すと「実施した」と誤って報告したまま設定変更が
+    # 反映されない、というインシデントが実際に発生したため
+    # (2026-09-11、gh pr createがTLS timeoutで失敗し、PRが作られず
+    #  孤立ブランチが残ったまま「git反映: 実施」と報告された)、
+    # 各ステップは最大2回まで自動リトライし、それでも失敗すれば
+    # git反映を諦めてmainに復帰し、エスカレーションする。
     branch_name = f"chore/auto-resize-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
-    git_steps = [
-        ["git", "checkout", "main"],
-        ["git", "pull", "origin", "main"],
-        ["git", "checkout", "-b", branch_name],
-        ["git", "add", "src/config.py"],
-    ]
-    for step in git_steps:
-        run(step)
+
+    def run_with_retry(cmd, retries=2, wait_sec=5):
+        result = run(cmd)
+        attempt = 1
+        while result.returncode != 0 and attempt < retries:
+            time.sleep(wait_sec)
+            result = run(cmd)
+            attempt += 1
+        return result
+
+    def abort_git_reflect(reason: str):
+        """git反映を諦め、mainブランチに復帰してエスカレーションする。"""
+        run(["git", "checkout", "main"])
+        run(["git", "branch", "-D", branch_name])
+        run(["git", "push", "origin", "--delete", branch_name])
+        summary = (
+            f"{timestamp}\n"
+            f"判断: 自動復旧の途中(git反映)で失敗したためエスカレーション\n"
+            f"失敗理由: {reason}\n"
+            f"reset_state.py/resize_grid.py --applyは既に実行済み(ローカルの\n"
+            f"config.pyはmainより新しい値のまま)。botはまだ古いconfig.pyで\n"
+            f"再起動していないため、意図した数量変更が反映されていない状態。\n"
+            f"元の判断根拠: {decision['reasoning']}"
+        )
+        notify("escalation", summary)
+        print(f"git反映に失敗したためエスカレーションしました: {reason}", file=sys.stderr)
+
+    for step in [["git", "checkout", "main"], ["git", "pull", "origin", "main"]]:
+        result = run_with_retry(step)
+        if result.returncode != 0:
+            abort_git_reflect(f"{' '.join(step)} が失敗")
+            return
+
+    checkout_result = run(["git", "checkout", "-b", branch_name])
+    if checkout_result.returncode != 0:
+        abort_git_reflect(f"ブランチ作成({branch_name})に失敗")
+        return
+    run(["git", "add", "src/config.py"])
 
     diff_check = run(["git", "diff", "--cached", "--quiet"])
     if diff_check.returncode != 0:
         # 差分がある場合のみコミット・PR作成
-        run(["git", "commit", "-m", f"resize_grid.py自動適用(インシデント対応): {timestamp}"])
-        run(["git", "push", "-u", "origin", branch_name])
-        run(["gh", "pr", "create", "--title", f"resize_grid.py自動適用({timestamp})",
+        commit_result = run(["git", "commit", "-m", f"resize_grid.py自動適用(インシデント対応): {timestamp}"])
+        if commit_result.returncode != 0:
+            abort_git_reflect("git commitに失敗")
+            return
+
+        push_result = run_with_retry(["git", "push", "-u", "origin", branch_name])
+        if push_result.returncode != 0:
+            abort_git_reflect("git pushに失敗(ネットワーク不調の可能性)")
+            return
+
+        pr_create_result = run_with_retry(["gh", "pr", "create", "--title", f"resize_grid.py自動適用({timestamp})",
              "--body", "インシデント自動対応によるamount_per_level_xrp調整"])
-        run(["gh", "pr", "merge", "--squash"])
-        run(["git", "checkout", "main"])
-        run(["git", "pull", "origin", "main"])
+        if pr_create_result.returncode != 0:
+            abort_git_reflect("gh pr createに失敗(ネットワーク不調の可能性)")
+            return
+
+        pr_merge_result = run_with_retry(["gh", "pr", "merge", "--squash"])
+        if pr_merge_result.returncode != 0:
+            abort_git_reflect("gh pr mergeに失敗")
+            return
+
+        checkout_main_result = run(["git", "checkout", "main"])
+        pull_result = run_with_retry(["git", "pull", "origin", "main"])
+        if checkout_main_result.returncode != 0 or pull_result.returncode != 0:
+            abort_git_reflect("マージ後のgit checkout main/pullに失敗")
+            return
+
+        # mainに実際に反映されたことを確認する(config.pyの差分が無いこと)
+        verify_result = run(["git", "diff", "main", "origin/main", "--", "src/config.py"])
         executed_steps.append("git反映: 実施(config.py変更あり)")
     else:
         run(["git", "checkout", "main"])
