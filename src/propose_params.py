@@ -173,20 +173,44 @@ def main():
         )
         update_config_file(best["width"], best["halt_deviation_jpy"])
         write_pr_body(current_width, current_halt, current_pnl, best, results, args.trades_csv)
-        _write_github_output(True)
+        improvement_pct = None
+        if current_pnl is not None and current_pnl != 0:
+            improvement_pct = (best["total_pnl_jpy"] - current_pnl) / abs(current_pnl) * 100
+        _write_github_output(
+            True,
+            current_width=current_width,
+            new_width=best["width"],
+            current_halt=current_halt,
+            new_halt=best["halt_deviation_jpy"],
+            improvement_pct=improvement_pct,
+        )
     else:
         logger.info("有意な改善が見られないため、今回は提案しません。")
         _write_github_output(False)
 
 
-def _write_github_output(proposal_needed: bool) -> None:
+def _write_github_output(
+    proposal_needed: bool,
+    current_width: float = None,
+    new_width: float = None,
+    current_halt: float = None,
+    new_halt: float = None,
+    improvement_pct: float = None,
+) -> None:
     gh_output = os.environ.get("GITHUB_OUTPUT")
     value = "true" if proposal_needed else "false"
+    lines = [f"proposal_needed={value}\n"]
+    if proposal_needed:
+        lines.append(f"current_width={current_width}\n")
+        lines.append(f"new_width={new_width}\n")
+        lines.append(f"current_halt={current_halt}\n")
+        lines.append(f"new_halt={new_halt}\n")
+        lines.append(f"improvement_pct={improvement_pct:.1f}\n" if improvement_pct is not None else "improvement_pct=\n")
     if gh_output:
         with open(gh_output, "a") as f:
-            f.write(f"proposal_needed={value}\n")
+            f.writelines(lines)
     else:
-        logger.info(f"(GITHUB_OUTPUT未設定のためログのみ) proposal_needed={value}")
+        logger.info(f"(GITHUB_OUTPUT未設定のためログのみ) {''.join(lines).strip()}")
 
 
 if __name__ == "__main__":

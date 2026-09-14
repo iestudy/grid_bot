@@ -1,4 +1,6 @@
-# 週次バックテスト & Tier1パラメータ提案パイプライン
+# 日次バックテスト & Tier1パラメータ提案パイプライン
+# (旧称: 週次。2026-09-14に実行頻度を週1回から毎日に変更した。
+#  ファイル名・ワークフロー名・ブランチ名は変更コストが高いため旧名を維持。)
 #
 # 重要: このワークフローはPRを自動作成するが、自動マージは一切行わない。
 # 実運用実績がまだ十分に蓄積していないため、意図的にTier1自動マージを
@@ -21,7 +23,7 @@ name: weekly-backtest-and-propose
 
 on:
   schedule:
-    - cron: "0 20 * * 0"  # 毎週日曜 20:00 UTC (日本時間 月曜 05:00頃)
+    - cron: "0 20 * * *"  # 毎日 20:00 UTC (日本時間 翌朝5:00頃)
   workflow_dispatch: {}    # 手動実行も可能にしておく(動作確認用)
 
 jobs:
@@ -69,10 +71,10 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.PARAM_PROPOSAL_PAT }}
-          commit-message: "chore(params): 週次バックテストによるgrid_width/halt_deviation調整提案"
+          commit-message: "chore(params): 日次バックテストによるgrid_width/halt_deviation調整提案"
           branch: auto/weekly-param-proposal
           delete-branch: true
-          title: "[Tier1候補] パラメータ調整の提案（週次バックテスト自動生成）"
+          title: "[Tier1候補] パラメータ調整の提案（日次バックテスト自動生成）"
           body-path: PR_BODY.md
           labels: |
             tier1-candidate
@@ -131,3 +133,17 @@ jobs:
         run: gh pr merge --auto --squash "${{ steps.create-pr.outputs.pull-request-number }}"
         env:
           GH_TOKEN: ${{ secrets.PARAM_PROPOSAL_PAT }}
+
+      - name: Notify Slack (提案あり)
+        if: steps.propose.outputs.proposal_needed == 'true'
+        run: |
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"📊 [日次パラメータ提案]\ngrid_width: ${{ steps.propose.outputs.current_width }} -> ${{ steps.propose.outputs.new_width }}\nhalt_deviation: ${{ steps.propose.outputs.current_halt }} -> ${{ steps.propose.outputs.new_halt }}\n改善率: ${{ steps.propose.outputs.improvement_pct }}%\nPR #${{ steps.create-pr.outputs.pull-request-number }} を自動マージ処理しました(envelope範囲内であることを確認済み)。\"}" \
+            "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Notify Slack (提案なし)
+        if: steps.propose.outputs.proposal_needed != 'true'
+        run: |
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data '{"text": "📊 [日次パラメータ提案] 有意な改善が見られなかったため、今回は提案なし(現状のパラメータを維持)。"}' \
+            "${{ secrets.SLACK_WEBHOOK_URL }}"

@@ -24,6 +24,30 @@ mainへのマージだけでは変更が反映されない。実際に、EMERGEN
 (grid_bot_incident.path)自体は正常だったが、そもそもトリガーとなる
 イベント(フラグファイル書き出し)が起きなかったため、何も検知できなかった。
 
+**amount_per_level_xrp(またはgrid_width等、グリッド構造に関わる
+パラメータ)をsrc/config.pyで変更した場合、単なるbot再起動だけでは
+不十分で、必ず`reset_state.py`を先に実行してから再起動すること。**
+
+sync_grid_orders()は「望ましいグリッド(desired_levels)のうち存在しない
+ものだけ新規発注する」設計であり、既存の注文を明示的にキャンセルする
+機能を持たない。そのため、config変更→bot再起動の順だけで済ませると、
+旧amountの注文がキャンセルされないまま残り、新amountの注文と混在する。
+実際に2026-09-14、amount_per_level_xrpを8.1から2.2へconfig変更した後、
+reset_state.pyを実行せずbotを再起動したところ、旧amount(8.1)の注文が
+複数残存したまま新amount(2.2)の注文が追加され、資金がさらに圧迫されて
+新規発注が60001(残高不足)で失敗し続ける事態になった。resize_grid.pyの
+`--apply`自体もこの問題を防がないため、config.pyへの書き込みを伴う
+変更(手動・自動問わず)の後は、常に次の順序を徹底すること:
+config.py変更 -> reset_state.py実行(既存注文の一掃) -> bot再起動。
+
+**resize_grid.pyの推奨値計算は自由JPY残高のみを基準にしており、
+XRP保有量を考慮しない構造的な弱点がある。** そのため「XRPは潤沢だが
+JPYが枯渇している」状況では、計算結果が0.0近辺になり実用に耐えない
+(2026-09-14に実際に発生)。このような場合は、resize_grid.pyの出力を
+鵜呑みにせず、estimate_total_capital_jpy()等で拘束分も含めた総資産を
+確認した上で、手動でamount_per_level_xrpを妥当な値に設定することを
+検討する。
+
 ## 前提として理解しておくこと
 
 - grid_botはXRP/JPYのグリッドトレーディングボット。EMERGENCY_STOPは
