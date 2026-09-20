@@ -63,6 +63,40 @@ bot(botは常に稼働継続させる前提であり、停止は要求しない)
 その直後に即reset_state.pyを実行すれば十分であり、この一手順の実行
 そのものにbot停止は不要。
 
+**上記を守っても、そもそも稼働中のbotプロセス自体が新しいconfig.pyを
+読み込んで再起動されていなければ意味がない。** reset_state.pyは
+「その時点でbotが実際に発注しているamount」で注文を出し直すため、
+botプロセスが古いconfig.py(古いamount)のまま動き続けていると、
+reset_state.pyを何度実行しても古いamountの注文が再構築され続ける。
+実際に2026-09-20、amount_per_level_xrpを17.9->9.0へ変更した際、
+config.pyのmain反映自体は正しく完了していたが、grid_bot.serviceが
+2日前(9/18)から一度も再起動されておらず、古いamount(17.9)のまま
+稼働し続けていたため、reset_state.pyを2回実行しても両方とも
+amount=17.9のまま再構築される事態になった(`sudo systemctl status
+grid_bot`のActive since時刻で気づいた)。
+
+したがって、config.pyの数量パラメータを変更してmainに反映した際は、
+以下の順序を徹底すること:
+1. `git pull`でmainの反映を確認
+2. `sudo systemctl status grid_bot`で、Active since時刻が
+   ステップ1より"前"であることを確認する(古いプロセスがまだ
+   稼働中であることの確認)。もし既にステップ1より後に再起動済み
+   なら、このステップは不要
+3. `sudo systemctl restart grid_bot`でbotプロセス自体を再起動し、
+   新しいconfig.pyを読み込ませる
+4. その直後、間を置かず`reset_state.py`を実行する(手順1の内容)
+
+なお、このオペレーション手順の徹底だけでは、「amount_per_level_xrpが
+総資産規模に対して過大/過小になる」こと自体は防げない。resize_grid.py
+は日次バックテスト(grid_width/halt_deviation)の対象外であり、
+amount_per_level_xrpは誰かが手動でresize_grid.pyを実行して
+初めて見直される。相場や在庫状況が変化してから長期間amountを
+見直していない場合、それ自体が「約定はあるが往復が成立せず
+損益が動かない」という膠着状態の原因になりうる(2026-09-20に発生)。
+定期的に(例えば日次パラメータ提案の確認と合わせて)
+`resize_grid.py --pair xrp_jpy`をdry-runで実行し、現在のamountと
+推奨値が大きく乖離していないか目視確認する運用を検討する。
+
 **resize_grid.pyの推奨値計算は自由JPY残高のみを基準にしており、
 XRP保有量を考慮しない構造的な弱点がある。** そのため「XRPは潤沢だが
 JPYが枯渇している」状況では、計算結果が0.0近辺になり実用に耐えない
