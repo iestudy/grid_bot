@@ -53,7 +53,7 @@ class GridEnvelopeConfig:
     # 既に信頼しているbase_price乖離という単一指標のみを使う設計。
     new_order_halt_deviation_min_jpy: float = 2.0
     new_order_halt_deviation_max_jpy: float = 6.0
-    new_order_halt_deviation_jpy: float = 3.5
+    new_order_halt_deviation_jpy: float = 5.5
 
     # 24時間の累積ドリフト上限（初期値からの乖離率）。これを超えたら強制的にTier2へ
     cumulative_drift_limit_ratio: float = 0.30
