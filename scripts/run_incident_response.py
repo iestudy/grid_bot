@@ -23,7 +23,7 @@ import json
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -126,17 +126,20 @@ def main():
             "reasoning": f"判断スクリプト実行中に例外が発生したため、安全側としてエスカレーションします: {e}",
         }
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    JST = timezone(timedelta(hours=9))
+    timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
+
+    def format_summary(title: str, body: str) -> str:
+        """結論(title)を先頭に、詳細(body)を後に続ける形式でSlack通知本文を組み立てる。"""
+        return f"{title}\n{timestamp}\n{body}"
 
     if decision["action"] == "escalate":
-        summary = (
-            f"{timestamp}\n"
-            f"判断: エスカレーション\n"
+        body = (
             f"該当条件: {', '.join(decision['matched_conditions']) or '(明示なし)'}\n"
             f"理由: {decision['reasoning']}\n"
             f"incident_check.py出力:\n{incident_json_text}"
         )
-        notify("escalation", summary)
+        notify("escalation", format_summary("エスカレーション通知: 自動対応は行っていません", body))
         print("エスカレーションしました。自動対応は行っていません。", file=sys.stderr)
         return
 
@@ -145,14 +148,12 @@ def main():
     #  リスクがあるため、事前に検知してエスカレーションする)
     status_check = run(["git", "status", "--porcelain"])
     if status_check.stdout.strip():
-        summary = (
-            f"{timestamp}\n"
-            f"判断: 自動復旧可能と判定されたが、作業ツリーに未コミットの変更が"
-            f"残っているため安全のためエスカレーション\n"
+        body = (
+            f"作業ツリーに未コミットの変更が残っているため安全のため見送りました。\n"
             f"git status --porcelain:\n{status_check.stdout}\n"
             f"元の判断根拠: {decision['reasoning']}"
         )
-        notify("escalation", summary)
+        notify("escalation", format_summary("エスカレーション通知: 自動復旧を見送りました(作業ツリー汚染)", body))
         print("作業ツリーが汚れているためエスカレーションしました。", file=sys.stderr)
         return
 
@@ -164,21 +165,13 @@ def main():
     executed_steps.append(f"reset_state.py: exit={reset_result.returncode}")
     if "失敗=0件" not in reset_result.stdout and "キャンセル結果" in reset_result.stdout:
         # 失敗件数が0でない場合はエスカレーション(ランブック条件4)
-        summary = (
-            f"{timestamp}\n"
-            f"判断: 自動復旧を試みたがreset_state.pyでキャンセル失敗が検出されたためエスカレーション\n"
-            f"reset_state.py出力:\n{reset_result.stdout}\n{reset_result.stderr}"
-        )
-        notify("escalation", summary)
+        body = f"reset_state.pyでキャンセル失敗が検出されたため見送りました。\n出力:\n{reset_result.stdout}\n{reset_result.stderr}"
+        notify("escalation", format_summary("エスカレーション通知: 自動復旧を見送りました(キャンセル失敗)", body))
         print("reset_state.pyでキャンセル失敗を検出。エスカレーションしました。", file=sys.stderr)
         return
     if reset_result.returncode != 0:
-        summary = (
-            f"{timestamp}\n"
-            f"判断: 自動復旧を試みたがreset_state.pyが異常終了(exit={reset_result.returncode})したためエスカレーション\n"
-            f"出力:\n{reset_result.stdout}\n{reset_result.stderr}"
-        )
-        notify("escalation", summary)
+        body = f"reset_state.pyが異常終了(exit={reset_result.returncode})したため見送りました。\n出力:\n{reset_result.stdout}\n{reset_result.stderr}"
+        notify("escalation", format_summary("エスカレーション通知: 自動復旧を見送りました(reset_state.py異常終了)", body))
         print("reset_state.pyが異常終了。エスカレーションしました。", file=sys.stderr)
         return
 
@@ -213,16 +206,14 @@ def main():
         run(["git", "checkout", "main"])
         run(["git", "branch", "-D", branch_name])
         run(["git", "push", "origin", "--delete", branch_name])
-        summary = (
-            f"{timestamp}\n"
-            f"判断: 自動復旧の途中(git反映)で失敗したためエスカレーション\n"
+        body = (
             f"失敗理由: {reason}\n"
             f"reset_state.py/resize_grid.py --applyは既に実行済み(ローカルの\n"
             f"config.pyはmainより新しい値のまま)。botはまだ古いconfig.pyで\n"
             f"再起動していないため、意図した数量変更が反映されていない状態。\n"
             f"元の判断根拠: {decision['reasoning']}"
         )
-        notify("escalation", summary)
+        notify("escalation", format_summary("エスカレーション通知: git反映に失敗しました", body))
         print(f"git反映に失敗したためエスカレーションしました: {reason}", file=sys.stderr)
 
     for step in [["git", "checkout", "main"], ["git", "pull", "origin", "main"]]:
@@ -282,13 +273,12 @@ def main():
     # 実残高を再取得して報告に含める
     final_check = run([VENV_PYTHON, "scripts/incident_check.py"])
 
-    summary = (
-        f"{timestamp}\n"
+    body = (
         f"判断根拠: {decision['reasoning']}\n"
         f"実施内容:\n" + "\n".join(f"  - {s}" for s in executed_steps) + "\n"
         f"復旧後の状況:\n{final_check.stdout}"
     )
-    notify("response", summary)
+    notify("response", format_summary("自動復旧通知: EMERGENCY_STOPから正常に復旧しました", body))
     print("自動復旧を完了しました。", file=sys.stderr)
 
 

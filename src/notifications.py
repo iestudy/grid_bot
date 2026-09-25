@@ -8,9 +8,12 @@ botの取引ロジック自体には一切影響を与えない(通知は補助�
 
 import logging
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import requests
+
+JST = timezone(timedelta(hours=9))
 
 logger = logging.getLogger(__name__)
 
@@ -51,26 +54,29 @@ class SlackNotifier:
         return self._send(text)
 
     def notify_emergency(self, action: str, current_price: float, unrealized_pnl_jpy: float) -> bool:
+        timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
         text = (
-            f"🚨 緊急停止発動: {action}\n"
-            f"現在価格: {current_price} / 含み損益: {unrealized_pnl_jpy:+.2f} 円\n"
-            f"botは自動停止しました。人間のレビューが必要です。"
+            f"🚨 緊急停止通知: botは自動停止しました。人間のレビューが必要です。\n"
+            f"{timestamp}\n"
+            f"発動アクション: {action}\n"
+            f"現在価格: {current_price} / 含み損益: {unrealized_pnl_jpy:+.2f} 円"
         )
         return self._send(text)
 
     def notify_incident_response(self, summary: str) -> bool:
         """
-        EMERGENCY_STOP後の自動対応(Claude Code経由)が完了した際の報告。
-        summaryはdocs/incident_response_runbook.mdで定めたフォーマット
-        (トリガー・実施内容・実残高・判断根拠)に沿った本文をそのまま渡す想定。
+        EMERGENCY_STOP後の自動対応が完了した際の報告。
+        summaryは呼び出し側(run_incident_response.py)で「結論(1行目)->
+        JST時刻->詳細」の順に組み立てた本文をそのまま渡す想定。
         """
-        text = f"🤖 [インシデント自動対応]\n{summary}"
+        text = f"🤖 {summary}"
         return self._send(text)
 
     def notify_incident_escalation(self, summary: str) -> bool:
         """
         EMERGENCY_STOP後の自動対応がエスカレーション条件に該当し、
-        人手対応が必要と判断された際の報告。
+        人手対応が必要と判断された際の報告。summaryのフォーマットは
+        notify_incident_responseと同様。
         """
-        text = f"⚠️ [要人手対応]\n{summary}"
+        text = f"⚠️ {summary}"
         return self._send(text)
