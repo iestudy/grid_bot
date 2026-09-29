@@ -90,6 +90,15 @@ def compute_recommended_amount_per_level_xrp(
     return round(recommended, 1)
 
 
+# 自由残高がこの値未満なら「実質ゼロ(枯渇している)」とみなし、
+# その側の制約は計算に含めない。0そのものだと、片側が本当に枯渇した際に
+# amount全体が0になり、もう片側(枯渇していない方)まで機能停止してしまう
+# バグが実際に発生したため(2026-09-25、XRP free 0.0001枚でamount=0.0に
+# なり、買い注文まで40001で全滅した)。
+NEGLIGIBLE_BALANCE_THRESHOLD_JPY = 10.0
+NEGLIGIBLE_BALANCE_THRESHOLD_XRP = 0.1
+
+
 def compute_recommended_amount_per_level(
     free_jpy: float,
     free_xrp: float,
@@ -100,7 +109,26 @@ def compute_recommended_amount_per_level(
     """
     JPY側・XRP側それぞれの推奨値を計算し、小さい方(より制約が厳しい側)を
     採用する。これにより、買い・売りどちらの側も無理なく発注できる値になる。
+
+    ただし、片側の自由残高が実質ゼロ(枯渇している)場合はその側の制約を
+    無視し、もう片側の基準のみで計算する。枯渇している側は「新規発注が
+    出せない」だけで実害は無く(既存注文の約定や、もう片側の約定を待てば
+    在庫は回復する)、amount全体を0にして両側を機能停止させるより、
+    機能する側だけでも動かす方が復旧が早い。両側とも枯渇している場合は
+    0.0を返す(それ以上小さくできる余地が無いため)。
     """
+    jpy_negligible = free_jpy < NEGLIGIBLE_BALANCE_THRESHOLD_JPY
+    xrp_negligible = free_xrp < NEGLIGIBLE_BALANCE_THRESHOLD_XRP
+
+    if jpy_negligible and xrp_negligible:
+        return 0.0
+    if xrp_negligible:
+        # XRPのみ枯渇 -> JPY基準のみで計算(買い側だけ動かす)
+        return compute_recommended_amount_per_level_jpy(free_jpy, base_price, cfg, budget_ratio)
+    if jpy_negligible:
+        # JPYのみ枯渇 -> XRP基準のみで計算(売り側だけ動かす)
+        return compute_recommended_amount_per_level_xrp(free_xrp, cfg, budget_ratio)
+
     jpy_based = compute_recommended_amount_per_level_jpy(free_jpy, base_price, cfg, budget_ratio)
     xrp_based = compute_recommended_amount_per_level_xrp(free_xrp, cfg, budget_ratio)
     return min(jpy_based, xrp_based)
@@ -142,14 +170,24 @@ def main():
     current_amount = GRID_ENVELOPE.amount_per_level_xrp
     jpy_based = compute_recommended_amount_per_level_jpy(free_jpy, current_price, budget_ratio=args.budget_ratio)
     xrp_based = compute_recommended_amount_per_level_xrp(free_xrp, budget_ratio=args.budget_ratio)
-    recommended = min(jpy_based, xrp_based)
-    constraint = "JPY" if jpy_based <= xrp_based else "XRP"
+    recommended = compute_recommended_amount_per_level(free_jpy, free_xrp, current_price, budget_ratio=args.budget_ratio)
+
+    jpy_negligible = free_jpy < NEGLIGIBLE_BALANCE_THRESHOLD_JPY
+    xrp_negligible = free_xrp < NEGLIGIBLE_BALANCE_THRESHOLD_XRP
+    if jpy_negligible and xrp_negligible:
+        constraint_note = "JPY・XRPともに枯渇しているため0.0"
+    elif xrp_negligible:
+        constraint_note = "XRPが枯渇しているためJPY基準のみで計算(買い側のみ)"
+    elif jpy_negligible:
+        constraint_note = "JPYが枯渇しているためXRP基準のみで計算(売り側のみ)"
+    else:
+        constraint_note = f"{'JPY' if jpy_based <= xrp_based else 'XRP'}側の制約が厳しいため採用"
 
     print(f"現在価格: {current_price}円")
     print(f"自由JPY残高: {free_jpy}円 / 自由XRP残高: {free_xrp}枚")
     print(f"現在のamount_per_level_xrp: {current_amount}")
     print(f"JPY基準の推奨値: {jpy_based} / XRP基準の推奨値: {xrp_based}")
-    print(f"推奨amount_per_level_xrp: {recommended} ({constraint}側の制約が厳しいため採用。予算比率{args.budget_ratio*100:.0f}%)")
+    print(f"推奨amount_per_level_xrp: {recommended} ({constraint_note}。予算比率{args.budget_ratio*100:.0f}%)")
 
     required_jpy_at_recommended = required_buy_side_jpy(
         __import__("dataclasses").replace(GRID_ENVELOPE, amount_per_level_xrp=recommended), current_price,
