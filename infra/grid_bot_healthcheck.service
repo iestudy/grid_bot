@@ -1,0 +1,19 @@
+# /etc/systemd/system/grid_bot_healthcheck.service として配置する。
+#
+# grid_bot_healthcheck.timer から定期的に起動される。
+# grid_bot.serviceのハートビートファイル(run/heartbeat.flag)を確認し、
+# 一定時間以上更新が無ければハングとみなしてbotを再起動する。
+
+[Unit]
+Description=grid_bot heartbeat check (detect and recover from hangs)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/grid_bot
+EnvironmentFile=/home/ec2-user/grid_bot/.env
+ExecStart=/home/ec2-user/grid_bot/venv/bin/python3 scripts/check_heartbeat.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grid_bot_healthcheck

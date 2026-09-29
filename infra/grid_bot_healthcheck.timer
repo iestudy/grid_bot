@@ -1,0 +1,15 @@
+# /etc/systemd/system/grid_bot_healthcheck.timer として配置する。
+#
+# 2分おきにgrid_bot_healthcheck.serviceを起動し、grid_bot.serviceの
+# ハートビートを監視する。
+
+[Unit]
+Description=Run grid_bot heartbeat check every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=grid_bot_healthcheck.service
+
+[Install]
+WantedBy=timers.target
