@@ -42,6 +42,24 @@ from .notifications import SlackNotifier
 # インシデント自動対応(run_incident_response.py)を起動する。
 EMERGENCY_STOP_FLAG_PATH = Path(__file__).resolve().parent.parent / "run" / "emergency_stop.flag"
 
+# 各iterationの開始時に更新されるハートビートファイル。
+# systemd timer(grid_bot_healthcheck.timer)がこのファイルの最終更新時刻を
+# 監視し、一定時間以上更新が無ければbotがハング(WebSocket接続の固着等)
+# していると判断して再起動する。実際に2026-09、原因不明のハングで
+# reconcile処理が9日間停止し、その間の約定がSlack通知されないまま
+# 放置される事態が発生したため導入した。
+HEARTBEAT_PATH = Path(__file__).resolve().parent.parent / "run" / "heartbeat.flag"
+
+
+def _write_heartbeat() -> None:
+    """書き出し失敗はループを止める理由にしない(ハートビート自体は
+    健全性監視の補助情報であり、これの失敗で取引ロジックを止めるべきではない)。"""
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.write_text(datetime.now(timezone.utc).isoformat())
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"ハートビートファイルの書き出しに失敗しました: {e}")
+
 
 def _write_emergency_stop_flag(action: str, current_price: float, unrealized_pnl_jpy: float) -> None:
     """EMERGENCY_STOP発動時の状況をフラグファイルに書き出す。
@@ -126,6 +144,7 @@ def run_loop(
         while max_iterations <= 0 or iteration < max_iterations:
             iteration += 1
             logger.info(f"--- iteration {iteration} ---")
+            _write_heartbeat()
 
             try:
                 current_price, price_source = _fetch_current_price(client, pair, price_feed)
