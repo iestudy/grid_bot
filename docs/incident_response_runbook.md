@@ -97,13 +97,19 @@ amount_per_level_xrpは誰かが手動でresize_grid.pyを実行して
 `resize_grid.py --pair xrp_jpy`をdry-runで実行し、現在のamountと
 推奨値が大きく乖離していないか目視確認する運用を検討する。
 
-**resize_grid.pyの推奨値計算は自由JPY残高のみを基準にしており、
-XRP保有量を考慮しない構造的な弱点がある。** そのため「XRPは潤沢だが
-JPYが枯渇している」状況では、計算結果が0.0近辺になり実用に耐えない
-(2026-09-14に実際に発生)。このような場合は、resize_grid.pyの出力を
-鵜呑みにせず、estimate_total_capital_jpy()等で拘束分も含めた総資産を
-確認した上で、手動でamount_per_level_xrpを妥当な値に設定することを
-検討する。
+**(解消済み、2026-09-30) resize_grid.pyはかつて自由JPY残高のみを
+基準に単一のamount_per_level_xrpを計算しており、「XRPは潤沢だが
+JPYが枯渇している」状況では計算結果が0.0近辺になり実用に耐えない
+という構造的な弱点があった(2026-09-14, 09-20, 09-25等、複数回の
+実運用インシデントが発生)。2026-09-30、buy_amount_per_level_xrp
+(JPY基準)とsell_amount_per_level_xrp(XRP基準)に分離し、買い側・
+売り側が互いの残高状況に引きずられないようにした。これにより、
+片側の残高が枯渇していてももう片側は正常な量で機能し続ける。
+
+resize_grid.pyは現在、buy側はfree_jpy、sell側はfree_xrpのみを見て
+それぞれ独立に計算する。実行すると両方の推奨値が表示されるので、
+`--apply`で両方まとめて更新するか、必要な方だけ手動でconfig.pyを
+編集する。
 
 ## 前提として理解しておくこと
 
@@ -161,19 +167,28 @@ JPYが枯渇している」状況では、計算結果が0.0近辺になり実�
    ションしたが、実際には帳簿バグではなく正当な状態だった)。
 
    したがって、net_inventoryが負の値であることの評価は、実残高
-   (balances.xrp.onhand_amount)と突き合わせて行うこと:
+   (balances.xrp.onhand_amount)と突き合わせて行うこと。
+   (2026-09-30、buy_amount_per_level_xrp / sell_amount_per_level_xrp
+   に分離したため、「amount_per_level_xrp未満/2倍以上」の目安は
+   buy_amount_per_level_xrp(config.py参照)を基準にする。
+   net_inventoryが負=売り越しは、買いグリッドの注文サイズが
+   積み上がった結果であるため):
 
    - **正当なパターン(自動復旧してよい)**: net_inventoryが負の値で、
      かつ実際のXRP保有量(onhand_amount)がゼロに近い(目安:
-     amount_per_level_xrp未満程度)。これは「保有していた分をほぼ
+     buy_amount_per_level_xrp未満程度)。これは「保有していた分をほぼ
      全て売り切った」という、値の大きさに関わらず筋の通る状態。
    - **異常なパターン(エスカレーションすべき)**: net_inventoryが
      負の値で、かつ実際のXRP保有量がまとまった量(目安:
-     amount_per_level_xrpの2倍以上)残っている。この場合、
+     buy_amount_per_level_xrpの2倍以上)残っている。この場合、
      「売った記録はあるのに手元にXRPも相応に残っている」ことになり、
      帳簿と実態が矛盾する。過去に-48XRP・-94.5XRPのような値が
      reconcileの取りこぼしや二重計上で発生したことがあり、そのときは
      実残高と帳簿の乖離が伴っていた。
+
+   net_inventoryが正の値(買い越し)の場合も同様の考え方で評価する。
+   この場合は売りグリッドの注文サイズ(sell_amount_per_level_xrp)が
+   目安になる。
 
    上記に加え、以下もエスカレーション対象とする:
    - active_orders.countとbot側が把握している未約定注文数が一致しない
@@ -217,7 +232,8 @@ M > 0 の場合はStep 1の条件4に該当するため、ここで処理を止�
 実残高のJPY予算70%・XRP保有量に基づいて計算するため、算出ロジックの
 安全性はスクリプト側に委譲している)。
 
-実行後、amount_per_level_xrpの変更内容(旧値→新値)を記録しておく。
+実行後、buy_amount_per_level_xrp・sell_amount_per_level_xrpの
+変更内容(旧値→新値)を記録しておく。
 
 ### Step 4: git反映
 
@@ -225,7 +241,7 @@ Step 3でconfig.pyが変更されるため、コミット・push・PR作成・�
 
     git checkout -b chore/auto-resize-YYYYMMDD-HHMM
     git add src/config.py
-    git commit -m "resize_grid.py自動適用(インシデント対応): amount_per_level_xrpをX->Yに調整"
+    git commit -m "resize_grid.py自動適用(インシデント対応): buy_amount_per_level_xrp/sell_amount_per_level_xrpをX->Yに調整"
     git push -u origin chore/auto-resize-YYYYMMDD-HHMM
     gh pr create --title "..." --body "..."
     gh pr merge --squash
@@ -263,7 +279,7 @@ Active: active (running)になっていることを確認する。
     トリガー: EMERGENCY_STOP (現在価格=X円, 含み損益=Y円)
     実施内容:
       - reset_state.py実行 (キャンセル成功=N件)
-      - resize_grid.py適用: amount_per_level_xrp X -> Y
+      - resize_grid.py適用: buy_amount_per_level_xrp X -> Y, sell_amount_per_level_xrp A -> B
       - bot再起動: 成功
     実残高: JPY free=X円 / XRP free=Y枚
     判断根拠: (エスカレーション条件に該当しなかった理由を簡潔に)

@@ -112,7 +112,7 @@ def run_simulation_with_replenishment(
         max_active_levels = cfg.max_buy_levels + cfg.max_sell_levels
 
     levels = generate_grid(base_price, cfg)
-    simulator = ConservativeFillSimulator(default_amount=cfg.amount_per_level_xrp)
+    simulator = ConservativeFillSimulator(default_amount=cfg.buy_amount_per_level_xrp)
     fills: List[SimulatedFill] = []
     width = cfg.grid_width_default_jpy
 
@@ -163,7 +163,7 @@ def run_simulation_with_halt(
         max_active_levels = cfg.max_buy_levels + cfg.max_sell_levels
 
     levels = generate_grid(base_price, cfg)
-    simulator = ConservativeFillSimulator(default_amount=cfg.amount_per_level_xrp)
+    simulator = ConservativeFillSimulator(default_amount=cfg.buy_amount_per_level_xrp)
     fills: List[SimulatedFill] = []
     width = cfg.grid_width_default_jpy
 
@@ -226,7 +226,7 @@ def run_simulation_with_stop_loss(
         max_active_levels = cfg.max_buy_levels + cfg.max_sell_levels
 
     levels = generate_grid(base_price, cfg)
-    simulator = ConservativeFillSimulator(default_amount=cfg.amount_per_level_xrp)
+    simulator = ConservativeFillSimulator(default_amount=cfg.buy_amount_per_level_xrp)
     fills: List[SimulatedFill] = []
     stop_events: List[dict] = []
     width = cfg.grid_width_default_jpy
@@ -470,7 +470,7 @@ def run_simulation_with_regime_filter(
         max_active_levels = cfg.max_buy_levels + cfg.max_sell_levels
 
     levels = generate_grid(base_price, cfg)
-    simulator = ConservativeFillSimulator(default_amount=cfg.amount_per_level_xrp)
+    simulator = ConservativeFillSimulator(default_amount=cfg.buy_amount_per_level_xrp)
     fills: List[SimulatedFill] = []
     width = cfg.grid_width_default_jpy
     price_history: "deque[float]" = deque(maxlen=trend_window)
