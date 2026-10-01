@@ -43,7 +43,17 @@ class GridEnvelopeConfig:
 
     # 1レベルあたりの数量(XRP)。実際の保有資産(JPY自由残高・XRP保有量)から逆算した初期値。
     # 口座残高が変わったら、estimate_total_capital_jpy()の結果を見ながら調整すること。
-    amount_per_level_xrp: float = 0.3
+    #
+    # 買い側・売り側を別々の値に分離している(2026-09までは共通の
+    # amount_per_level_xrpだった)。共通値だと、JPYとXRPの残高が
+    # 偏った際(例: 買いが連続約定してXRPが貯まりJPYが枯渇)、
+    # 枯渇した側に合わせてamountを下げざるを得ず、潤沢な側まで
+    # 小さい注文しか出せなくなる問題が繰り返し発生していた
+    # (2026-09、resize_grid.pyの片側制約で複数回のインシデント)。
+    # 分離することで、買い側はJPY残高、売り側はXRP残高だけを基準に
+    # それぞれ無理のない量を計算できる。
+    buy_amount_per_level_xrp: float = 0.3
+    sell_amount_per_level_xrp: float = 0.3
 
     # base_priceからの片道乖離がこの値以上になったら、新規発注(sync_grid_orders)を
     # 一時停止する(既存注文はそのまま、HardStopLossManagerの判定・キャンセルも

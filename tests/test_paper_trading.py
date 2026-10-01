@@ -118,7 +118,7 @@ def test_regime_filter_stops_replenishment_during_trend():
         grid_width_default_jpy=0.5,
         max_buy_levels=2,
         max_sell_levels=2,
-        amount_per_level_xrp=8.0,
+        buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0,
     )
     # 最初にwindow分のフラットな価格履歴を用意し、その後急落させてトレンドを発生させる
     trades = []
@@ -155,7 +155,7 @@ def test_stop_loss_triggers_full_close_and_halts():
     from src.config import GridEnvelopeConfig, HardStopLossConfig
 
     cfg = GridEnvelopeConfig(
-        grid_width_default_jpy=0.5, max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=100.0,
+        grid_width_default_jpy=0.5, max_buy_levels=2, max_sell_levels=2, buy_amount_per_level_xrp=100.0, sell_amount_per_level_xrp=100.0,
     )
     hard_stop_cfg = HardStopLossConfig(
         max_drawdown_ratio=0.15, partial_close_ratio=0.08, partial_close_fraction=0.5,
@@ -179,7 +179,7 @@ def test_stop_loss_does_not_trigger_when_pnl_healthy():
     from src.config import GridEnvelopeConfig, HardStopLossConfig
 
     cfg = GridEnvelopeConfig(
-        grid_width_default_jpy=0.5, max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=8.0,
+        grid_width_default_jpy=0.5, max_buy_levels=2, max_sell_levels=2, buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0,
     )
     hard_stop_cfg = HardStopLossConfig(
         max_drawdown_ratio=0.15, partial_close_ratio=0.08, partial_close_fraction=0.5,
@@ -201,7 +201,7 @@ def test_parameter_sweep_returns_sorted_results():
     from src.paper_trading import run_parameter_sweep, Trade
     from src.config import GridEnvelopeConfig, HardStopLossConfig
 
-    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=8.0)
+    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0)
     hard_stop_cfg = HardStopLossConfig(total_capital_jpy=30_000.0)
 
     trades = [
@@ -223,7 +223,7 @@ def test_sweep_grid_width_only_returns_sorted_results():
     from src.paper_trading import sweep_grid_width_only, Trade
     from src.config import GridEnvelopeConfig
 
-    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=8.0)
+    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0)
     trades = [
         Trade(timestamp=float(i), side="sell" if i % 2 == 0 else "buy", price=100.0 - i * 0.05, amount=50.0)
         for i in range(200)
@@ -244,7 +244,7 @@ def test_run_simulation_with_halt_suppresses_replenishment_during_deviation():
     # grid幅を広く取り、初回の約定自体がすでにhalt閾値を超える乖離になるよう設計する
     cfg = GridEnvelopeConfig(
         grid_width_default_jpy=5.0, max_buy_levels=1, max_sell_levels=1,
-        amount_per_level_xrp=8.0, new_order_halt_deviation_jpy=4.0,
+        buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0, new_order_halt_deviation_jpy=4.0,
     )
     # 初期グリッド: base_price=100 → sell@105, buy@95
     trades = [
@@ -267,7 +267,7 @@ def test_run_simulation_with_halt_uses_config_default_when_not_specified():
     from src.paper_trading import run_simulation_with_halt, Trade
     from src.config import GridEnvelopeConfig
 
-    cfg = GridEnvelopeConfig(new_order_halt_deviation_jpy=2.0, max_buy_levels=1, max_sell_levels=1, amount_per_level_xrp=8.0)
+    cfg = GridEnvelopeConfig(new_order_halt_deviation_jpy=2.0, max_buy_levels=1, max_sell_levels=1, buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0)
     trades = [Trade(timestamp=0.0, side="sell", price=97.0, amount=50.0)]  # 乖離3円 > 閾値2円
 
     fills = run_simulation_with_halt(base_price=100.0, cfg=cfg, trades=iter(trades))
@@ -279,7 +279,7 @@ def test_sweep_grid_width_and_halt_returns_sorted_2d_results():
     from src.paper_trading import sweep_grid_width_and_halt, Trade
     from src.config import GridEnvelopeConfig
 
-    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, amount_per_level_xrp=8.0)
+    cfg = GridEnvelopeConfig(max_buy_levels=2, max_sell_levels=2, buy_amount_per_level_xrp=8.0, sell_amount_per_level_xrp=8.0)
     trades = [
         Trade(timestamp=float(i), side="sell" if i % 2 == 0 else "buy", price=100.0 - i * 0.05, amount=50.0)
         for i in range(200)

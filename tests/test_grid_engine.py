@@ -54,7 +54,10 @@ def test_envelope_clamp():
 def test_generate_grid_includes_amount():
     cfg = GridEnvelopeConfig()
     levels = generate_grid(base_price=159.61, cfg=cfg)
-    assert all(l.amount == cfg.amount_per_level_xrp for l in levels)
+    buy_levels = [l for l in levels if l.side == "buy"]
+    sell_levels = [l for l in levels if l.side == "sell"]
+    assert all(l.amount == cfg.buy_amount_per_level_xrp for l in buy_levels)
+    assert all(l.amount == cfg.sell_amount_per_level_xrp for l in sell_levels)
 
 
 def test_estimate_total_capital_jpy_matches_actual_balance():
@@ -72,20 +75,18 @@ def test_estimate_total_capital_jpy_matches_actual_balance():
 def test_required_buy_side_jpy_within_available_balance():
     """
     2026-08時点の実際の資産スナップショット(JPY 8302.36円)に対し、
-    当時のamount_per_level_xrp(8.0)が過大な買いグリッドを要求しないことの
-    回帰確認。
+    当時のamount(8.0)が過大な買いグリッドを要求しないことの回帰確認。
 
-    注意: GridEnvelopeConfig()はamount_per_level_xrpも含めてsrc/config.pyの
-    現在値をそのまま引き継ぐ。このフィールドはresize_grid.py/propose_params.py
-    により運用中に書き換えられる設計のため、cfg = GridEnvelopeConfig()を
-    そのまま使うと、運用が進んで値が変わるたびにこのテストが無関係な理由で
-    壊れる(実際に2026-09-14、amount_per_level_xrpが18.2に変更された際、
-    このテストが失敗しCIをブロックする事象が発生した)。
-    このテストの意図は「特定のamount値が特定の資産規模に対して過大か」を
-    見ることなので、config.pyの現在値に依存せず、当時のamountを明示的に
-    指定して固定する。
+    注意: GridEnvelopeConfig()はbuy_amount_per_level_xrpも含めて
+    src/config.pyの現在値をそのまま引き継ぐ。このフィールドは
+    resize_grid.py/propose_params.pyにより運用中に書き換えられる設計の
+    ため、cfg = GridEnvelopeConfig()をそのまま使うと、運用が進んで
+    値が変わるたびにこのテストが無関係な理由で壊れる(過去に実際に
+    発生した)。このテストの意図は「特定のamount値が特定の資産規模に
+    対して過大か」を見ることなので、config.pyの現在値に依存せず、
+    当時のamountを明示的に指定して固定する。
     """
-    cfg = dataclasses.replace(GridEnvelopeConfig(), amount_per_level_xrp=8.0)
+    cfg = dataclasses.replace(GridEnvelopeConfig(), buy_amount_per_level_xrp=8.0)
     required_jpy = required_buy_side_jpy(cfg, base_price=159.61)
     available_jpy = 8302.36  # キャンセル後の自由JPY残高(2026-08時点)
     assert required_jpy < available_jpy, (
@@ -95,8 +96,8 @@ def test_required_buy_side_jpy_within_available_balance():
 
 def test_required_sell_side_xrp_within_holdings():
     """test_required_buy_side_jpy_within_available_balanceと同様の理由で、
-    amount_per_level_xrpを当時の値(8.0)に固定する。"""
-    cfg = dataclasses.replace(GridEnvelopeConfig(), amount_per_level_xrp=8.0)
+    sell_amount_per_level_xrpを当時の値(8.0)に固定する。"""
+    cfg = dataclasses.replace(GridEnvelopeConfig(), sell_amount_per_level_xrp=8.0)
     required_xrp = required_sell_side_xrp(cfg)
     held_xrp = 120.0
     assert required_xrp <= held_xrp, (

@@ -37,13 +37,13 @@ def generate_grid(base_price: float, cfg: GridEnvelopeConfig) -> List[GridLevel]
         levels.append(GridLevel(
             side="buy",
             price=round(base_price - width * i, 4),
-            amount=cfg.amount_per_level_xrp,
+            amount=cfg.buy_amount_per_level_xrp,
         ))
     for i in range(1, cfg.max_sell_levels + 1):
         levels.append(GridLevel(
             side="sell",
             price=round(base_price + width * i, 4),
-            amount=cfg.amount_per_level_xrp,
+            amount=cfg.sell_amount_per_level_xrp,
         ))
     return levels
 
@@ -73,13 +73,13 @@ def required_buy_side_jpy(cfg: GridEnvelopeConfig, base_price: float) -> float:
     total = 0.0
     for i in range(1, cfg.max_buy_levels + 1):
         price = base_price - width * i
-        total += price * cfg.amount_per_level_xrp
+        total += price * cfg.buy_amount_per_level_xrp
     return total
 
 
 def required_sell_side_xrp(cfg: GridEnvelopeConfig) -> float:
     """売りグリッド全レベル分に必要なXRP総量。"""
-    return cfg.amount_per_level_xrp * cfg.max_sell_levels
+    return cfg.sell_amount_per_level_xrp * cfg.max_sell_levels
 
 
 def synthetic_position_from_portfolio(cash_flow: float, net_inventory: float, cost_side_hint: str = None):

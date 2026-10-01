@@ -242,7 +242,7 @@ def main():
             return
 
         pr_create_result = run_with_retry(["gh", "pr", "create", "--title", f"resize_grid.py自動適用({timestamp})",
-             "--body", "インシデント自動対応によるamount_per_level_xrp調整"])
+             "--body", "インシデント自動対応によるbuy_amount_per_level_xrp/sell_amount_per_level_xrp調整"])
         if pr_create_result.returncode != 0:
             abort_git_reflect("gh pr createに失敗(ネットワーク不調の可能性)")
             return
