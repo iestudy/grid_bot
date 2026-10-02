@@ -52,8 +52,8 @@ class GridEnvelopeConfig:
     # (2026-09、resize_grid.pyの片側制約で複数回のインシデント)。
     # 分離することで、買い側はJPY残高、売り側はXRP残高だけを基準に
     # それぞれ無理のない量を計算できる。
-    buy_amount_per_level_xrp: float = 16.4
-    sell_amount_per_level_xrp: float = 0.1
+    buy_amount_per_level_xrp: float = 16.5
+    sell_amount_per_level_xrp: float = 0.3
 
     # base_priceからの片道乖離がこの値以上になったら、新規発注(sync_grid_orders)を
     # 一時停止する(既存注文はそのまま、HardStopLossManagerの判定・キャンセルも
