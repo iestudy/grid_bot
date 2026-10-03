@@ -179,6 +179,27 @@ def main():
     resize_result = run([VENV_PYTHON, "-m", "src.resize_grid", "--pair", "xrp_jpy", "--apply"])
     executed_steps.append(f"resize_grid.py --apply: exit={resize_result.returncode}")
 
+    # resize_grid.py --applyが書き込んだ新しいamountを、git操作に入る前に
+    # 控えておく。git反映が途中で失敗するとブランチごと変更が失われるため
+    # (2026-10-03、gh pr createの失敗後にabort_git_reflectが動き、計算結果が
+    #  消えて手動でやり直しになった)、失敗時の通知に載せて手動復旧できるようにする。
+    pending_amounts = {}
+    try:
+        config_text = (PROJECT_ROOT / "src" / "config.py").read_text()
+        import re as _re
+        buy_match = _re.search(r"buy_amount_per_level_xrp:\s*float\s*=\s*([\d.]+)", config_text)
+        sell_match = _re.search(r"sell_amount_per_level_xrp:\s*float\s*=\s*([\d.]+)", config_text)
+        if buy_match and sell_match:
+            pending_amounts = {
+                "buy_amount_per_level_xrp": float(buy_match.group(1)),
+                "sell_amount_per_level_xrp": float(sell_match.group(1)),
+            }
+            pending_path = PROJECT_ROOT / "run" / "pending_resize.json"
+            pending_path.parent.mkdir(parents=True, exist_ok=True)
+            pending_path.write_text(json.dumps(pending_amounts, ensure_ascii=False))
+    except Exception as e:
+        print(f"pending_resize.jsonの保存に失敗しました(処理は継続します): {e}", file=sys.stderr)
+
     # Step 4: git反映
     #
     # 各ステップ(特にpush/pr create/pr merge)はネットワーク不調
@@ -192,25 +213,41 @@ def main():
     # git反映を諦めてmainに復帰し、エスカレーションする。
     branch_name = f"chore/auto-resize-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
 
-    def run_with_retry(cmd, retries=2, wait_sec=5):
+    def run_with_retry(cmd, retries=5, base_wait_sec=10):
+        """失敗時は指数バックオフ(10→20→40→80秒)で最大retries回まで試す。
+        このEC2からGitHubへの通信はTLS handshake timeoutが頻発するため、
+        短い間隔の2回リトライでは足りなかった(2026-09-23, 10-03)。"""
         result = run(cmd)
         attempt = 1
         while result.returncode != 0 and attempt < retries:
-            time.sleep(wait_sec)
+            time.sleep(base_wait_sec * (2 ** (attempt - 1)))
             result = run(cmd)
             attempt += 1
         return result
 
     def abort_git_reflect(reason: str):
         """git反映を諦め、mainブランチに復帰してエスカレーションする。"""
+        # ローカルのブランチ(コミット済みの変更を含む)は削除せず残し、
+        # 手動での再利用に備える。リモートに作成済みのブランチだけ片付ける。
         run(["git", "checkout", "main"])
-        run(["git", "branch", "-D", branch_name])
         run(["git", "push", "origin", "--delete", branch_name])
+        if pending_amounts:
+            amounts_text = (
+                f"resize_grid.pyが計算した新しい値: "
+                f"buy_amount_per_level_xrp={pending_amounts['buy_amount_per_level_xrp']}, "
+                f"sell_amount_per_level_xrp={pending_amounts['sell_amount_per_level_xrp']}\n"
+                f"(run/pending_resize.jsonにも保存済み。ローカルブランチ{branch_name}が"
+                f"残っている場合は、そこにコミット済みです)\n"
+                f"手動で反映する場合は、`venv/bin/python3 -m src.resize_grid --pair xrp_jpy --apply`"
+                f"を再実行すると、その時点の残高で再計算されます。\n"
+            )
+        else:
+            amounts_text = "新しいamountの値を控えられていません。resize_grid.pyを再実行してください。\n"
         body = (
             f"失敗理由: {reason}\n"
-            f"reset_state.py/resize_grid.py --applyは既に実行済み(ローカルの\n"
-            f"config.pyはmainより新しい値のまま)。botはまだ古いconfig.pyで\n"
-            f"再起動していないため、意図した数量変更が反映されていない状態。\n"
+            f"reset_state.py/resize_grid.py --applyは既に実行済みですが、\n"
+            f"mainへの反映が完了していないため、botは停止したままです。\n"
+            f"{amounts_text}"
             f"元の判断根拠: {decision['reasoning']}"
         )
         notify("escalation", format_summary("エスカレーション通知: git反映に失敗しました", body))
@@ -241,15 +278,49 @@ def main():
             abort_git_reflect("git pushに失敗(ネットワーク不調の可能性)")
             return
 
-        pr_create_result = run_with_retry(["gh", "pr", "create", "--title", f"resize_grid.py自動適用({timestamp})",
-             "--body", "インシデント自動対応によるbuy_amount_per_level_xrp/sell_amount_per_level_xrp調整"])
-        if pr_create_result.returncode != 0:
-            abort_git_reflect("gh pr createに失敗(ネットワーク不調の可能性)")
+        # gh pr createは、通信エラーでタイムアウトしてもサーバー側では作成に
+        # 成功していることがある。そのまま再試行すると「PRが既に存在する」で
+        # 失敗し、成功を失敗と取り違えるため、失敗するたびにPRの存在を確認する。
+        def pr_exists() -> bool:
+            r = run(["gh", "pr", "list", "--head", branch_name, "--state", "all", "--json", "number", "--jq", "length"])
+            return r.returncode == 0 and r.stdout.strip() not in ("", "0")
+
+        pr_create_ok = False
+        for attempt in range(5):
+            if pr_exists():
+                pr_create_ok = True
+                break
+            pr_create_result = run(["gh", "pr", "create", "--title", f"resize_grid.py自動適用({timestamp})",
+                 "--body", "インシデント自動対応によるbuy_amount_per_level_xrp/sell_amount_per_level_xrp調整"])
+            if pr_create_result.returncode == 0:
+                pr_create_ok = True
+                break
+            time.sleep(10 * (2 ** attempt))
+        if not pr_create_ok and pr_exists():
+            pr_create_ok = True
+        if not pr_create_ok:
+            abort_git_reflect("gh pr createに失敗(ネットワーク不調の可能性。5回リトライ後もPRが存在しない)")
             return
 
-        pr_merge_result = run_with_retry(["gh", "pr", "merge", "--squash"])
-        if pr_merge_result.returncode != 0:
-            abort_git_reflect("gh pr mergeに失敗")
+        # gh pr mergeも同様に、失敗するたびにマージ済みかどうかを確認する。
+        def pr_merged() -> bool:
+            r = run(["gh", "pr", "view", branch_name, "--json", "state", "--jq", ".state"])
+            return r.returncode == 0 and r.stdout.strip() == "MERGED"
+
+        pr_merge_ok = False
+        for attempt in range(5):
+            if pr_merged():
+                pr_merge_ok = True
+                break
+            pr_merge_result = run(["gh", "pr", "merge", branch_name, "--squash"])
+            if pr_merge_result.returncode == 0:
+                pr_merge_ok = True
+                break
+            time.sleep(10 * (2 ** attempt))
+        if not pr_merge_ok and pr_merged():
+            pr_merge_ok = True
+        if not pr_merge_ok:
+            abort_git_reflect("gh pr mergeに失敗(5回リトライ後もマージ済みになっていない)")
             return
 
         checkout_main_result = run(["git", "checkout", "main"])
