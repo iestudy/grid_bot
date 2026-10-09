@@ -80,9 +80,35 @@ def run(cmd, **kwargs):
     return result
 
 
+ESCALATION_PENDING_PATH = PROJECT_ROOT / "run" / "escalation_pending.json"
+
+
+def _record_escalation_pending(summary: str) -> None:
+    """エスカレーション通知を出したことを記録する。
+
+    botが停止したままの間、scripts/remind_escalation.pyが定期的に再通知する。
+    2026-10-05と10-09、誤判定のエスカレーションでbotが長時間止まったまま
+    人が気づくまで放置された(10/5は約2日)ため、通知が1回流れて終わらないようにする。
+    書き込みの失敗は、エスカレーション自体を妨げない。
+    """
+    try:
+        first_line = summary.strip().split("\n")[0] if summary.strip() else ""
+        ESCALATION_PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ESCALATION_PENDING_PATH.write_text(json.dumps({
+            "escalated_at": datetime.now(timezone.utc).isoformat(),
+            "last_notified_at": datetime.now(timezone.utc).isoformat(),
+            "reminder_count": 0,
+            "headline": first_line,
+        }, ensure_ascii=False))
+    except Exception as e:
+        print(f"escalation_pending.jsonの書き込みに失敗しました(エスカレーションは続行): {e}", file=sys.stderr)
+
+
 def notify(notify_type: str, summary: str):
     if DRY_RUN:
         summary = f"[DRY RUN]\n{summary}"
+    elif notify_type == "escalation":
+        _record_escalation_pending(summary)
     run([VENV_PYTHON, "scripts/notify_incident.py", "--type", notify_type, "--summary", summary])
 
 

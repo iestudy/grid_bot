@@ -1,0 +1,13 @@
+# /etc/systemd/system/grid_bot_escalation_reminder.timer として配置する。
+# 30分おきに起動し、再通知が必要かを判定する(実際の通知間隔は6時間)。
+
+[Unit]
+Description=Check grid_bot escalation reminder every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Unit=grid_bot_escalation_reminder.service
+
+[Install]
+WantedBy=timers.target
