@@ -179,3 +179,36 @@ def test_real_run_dir_is_not_polluted_by_tests():
     from pathlib import Path
     real = Path(__file__).resolve().parent.parent / "run" / "reset_baseline.json"
     assert rs.RESET_BASELINE_PATH != real
+
+
+def test_call_with_retry_recovers_from_transient_error():
+    """一過性のエラー(認証エラー20001など)で、2回失敗しても3回目で成功すれば結果を返す。"""
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    spec = importlib.util.spec_from_file_location(
+        "incident_check_mod", Path(__file__).resolve().parent.parent / "scripts" / "incident_check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    func = MagicMock(side_effect=[RuntimeError("20001"), RuntimeError("20001"), {"ok": True}])
+    assert mod._call_with_retry(func, wait_sec=0.0) == {"ok": True}
+    assert func.call_count == 3
+
+
+def test_call_with_retry_raises_after_all_attempts_fail():
+    """3回すべて失敗したら、最後の例外を投げる(呼び出し側がerrorsに記録する)。"""
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    spec = importlib.util.spec_from_file_location(
+        "incident_check_mod2", Path(__file__).resolve().parent.parent / "scripts" / "incident_check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    func = MagicMock(side_effect=RuntimeError("20001"))
+    with pytest.raises(RuntimeError):
+        mod._call_with_retry(func, wait_sec=0.0)
+    assert func.call_count == 3

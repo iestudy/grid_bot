@@ -16,6 +16,26 @@ import sys
 from pathlib import Path
 
 
+def _call_with_retry(func, *args, retries=3, wait_sec=1.0, **kwargs):
+    """bitbank APIの一過性エラー(認証エラー20001など)に備えた、短いリトライ。
+
+    2026-09〜10、incident_check.pyのget_assetsが、一過性の20001(認証エラー)で
+    失敗することが複数回あった。errorsが空でないと、自動対応がエスカレーション条件1
+    に該当して停止するため、短い間隔で再試行する。待ち時間は 1秒、2秒(指数的)。
+    すべて失敗した場合は、最後の例外をそのまま投げる(呼び出し側がerrorsに記録する)。
+    """
+    import time as _time
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                _time.sleep(wait_sec * (2 ** attempt))
+    raise last_exc
+
+
 def load_env(env_path: Path) -> dict:
     env = {}
     if not env_path.exists():
@@ -48,7 +68,7 @@ def main():
             api_key=env_vars.get("BITBANK_API_KEY"),
             api_secret=env_vars.get("BITBANK_API_SECRET"),
         )
-        assets = client.get_assets()["assets"]
+        assets = _call_with_retry(client.get_assets)["assets"]
         balances = {}
         for a in assets:
             if a["asset"] in ("jpy", "xrp"):
@@ -64,7 +84,7 @@ def main():
 
     # --- アクティブ注文 ---
     try:
-        orders = client.get_active_orders("xrp_jpy")["orders"]
+        orders = _call_with_retry(client.get_active_orders, "xrp_jpy")["orders"]
         result["active_orders"] = {
             "count": len(orders),
             "orders": [
@@ -141,7 +161,7 @@ def main():
 
         current_price = None
         try:
-            current_price = float(client.get_ticker("xrp_jpy")["data"]["last"])
+            current_price = float(_call_with_retry(client.get_ticker, "xrp_jpy")["data"]["last"])
         except Exception as e:
             result["errors"].append(f"現在価格の取得失敗(整合性判定に影響): {e}")
 
