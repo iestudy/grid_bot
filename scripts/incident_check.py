@@ -118,6 +118,59 @@ def main():
         consistency["active_order_count"] = result["active_orders"]["count"]
     result["consistency"] = consistency
 
+    # --- config の現在の amount(判断側が推測せずに済むようにする) ---
+    try:
+        from src.config import GRID_ENVELOPE
+        result["config"] = {
+            "buy_amount_per_level_xrp": GRID_ENVELOPE.buy_amount_per_level_xrp,
+            "sell_amount_per_level_xrp": GRID_ENVELOPE.sell_amount_per_level_xrp,
+            "grid_width_default_jpy": GRID_ENVELOPE.grid_width_default_jpy,
+            "new_order_halt_deviation_jpy": GRID_ENVELOPE.new_order_halt_deviation_jpy,
+        }
+    except Exception as e:
+        result["errors"].append(f"config取得失敗: {e}")
+        result["config"] = None
+
+    # --- 在庫の整合性判定(net_inventory/cash_flowと実残高を、コードで決定的に判定) ---
+    # 判定が「consistent」なら、incident_decide.pyはClaudeのエスカレーション条件2の
+    # 判断を採用しない。「inconsistent」「unknown」の場合は、従来通りClaudeに渡す。
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        from src.inventory_consistency import check_inventory_consistency
+
+        current_price = None
+        try:
+            current_price = float(client.get_ticker("xrp_jpy")["data"]["last"])
+        except Exception as e:
+            result["errors"].append(f"現在価格の取得失敗(整合性判定に影響): {e}")
+
+        baseline_xrp = None
+        baseline_path = _Path(__file__).resolve().parent.parent / "run" / "reset_baseline.json"
+        if baseline_path.exists():
+            try:
+                baseline_xrp = float(_json.loads(baseline_path.read_text()).get("xrp_onhand"))
+            except Exception as e:
+                result["errors"].append(f"reset_baseline.jsonの読み込み失敗: {e}")
+
+        if result.get("balances") and result.get("bot_state"):
+            result["current_price"] = current_price
+            result["inventory_consistency"] = check_inventory_consistency(
+                net_inventory=result["bot_state"]["net_inventory"],
+                cash_flow=result["bot_state"]["cash_flow"],
+                xrp_onhand=result["balances"]["xrp"]["onhand_amount"],
+                current_price=current_price,
+                baseline_xrp=baseline_xrp,
+            )
+        else:
+            result["inventory_consistency"] = {
+                "status": "unknown",
+                "reasons": ["残高または帳簿を取得できなかったため判定できない"],
+            }
+    except Exception as e:
+        result["errors"].append(f"在庫整合性判定の失敗: {e}")
+        result["inventory_consistency"] = {"status": "unknown", "reasons": [f"判定中に例外: {e}"]}
+
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
