@@ -27,4 +27,12 @@ def _isolate_run_loop_flag_files(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_loop_module, "EMERGENCY_STOP_FLAG_PATH", tmp_path / "run" / "emergency_stop.flag")
     monkeypatch.setattr(run_loop_module, "HEARTBEAT_PATH", tmp_path / "run" / "heartbeat.flag")
+    # reset_state.pyも、リセット時の実残高を run/reset_baseline.json に書き込む。
+    # 隔離しないと、reset_state()を呼ぶテストが本物のファイルを汚染する
+    # (2026-10-09、モックのclientから残高の無い基準値が書き込まれた)。
+    try:
+        import src.reset_state as reset_state_module
+        monkeypatch.setattr(reset_state_module, "RESET_BASELINE_PATH", tmp_path / "run" / "reset_baseline.json")
+    except Exception:
+        pass
     yield

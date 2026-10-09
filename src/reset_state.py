@@ -52,6 +52,10 @@ def _save_reset_baseline(client: BitbankClient) -> None:
         for a in assets:
             if a["asset"] in ("jpy", "xrp"):
                 baseline[f"{a['asset']}_onhand"] = float(a["onhand_amount"])
+        if "xrp_onhand" not in baseline or "jpy_onhand" not in baseline:
+            # 残高が取れていない基準値は、書かない(書くと、検証側が壊れた基準値を読む)。
+            logger.warning(f"JPY/XRPの残高が取得できなかったため、基準値は保存しません: {baseline}")
+            return
         RESET_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
         RESET_BASELINE_PATH.write_text(json.dumps(baseline, ensure_ascii=False))
         logger.info(f"リセット時の実残高を記録しました: {baseline}")

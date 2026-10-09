@@ -158,3 +158,24 @@ def test_reset_baseline_failure_does_not_raise(tmp_path, monkeypatch):
     client.get_assets.side_effect = RuntimeError("API障害")
     rs._save_reset_baseline(client)  # 例外を投げない
     assert not (tmp_path / "run" / "reset_baseline.json").exists()
+
+
+def test_reset_does_not_save_baseline_without_balances(tmp_path, monkeypatch):
+    """残高が取れないとき、残高の無い基準値を書かない(検証側が壊れた基準値を読むため)。"""
+    import src.reset_state as rs
+    from unittest.mock import MagicMock
+
+    path = tmp_path / "run" / "reset_baseline.json"
+    monkeypatch.setattr(rs, "RESET_BASELINE_PATH", path)
+    client = MagicMock()
+    client.get_assets.return_value = {"assets": []}
+    rs._save_reset_baseline(client)
+    assert not path.exists()
+
+
+def test_real_run_dir_is_not_polluted_by_tests():
+    """conftestの隔離により、テストが本物のrun/reset_baseline.jsonを書かないこと。"""
+    import src.reset_state as rs
+    from pathlib import Path
+    real = Path(__file__).resolve().parent.parent / "run" / "reset_baseline.json"
+    assert rs.RESET_BASELINE_PATH != real
