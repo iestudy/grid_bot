@@ -20,8 +20,11 @@ PositionLedger/base_price)と取引所の実際の状態が乖離してしまっ
 """
 
 import argparse
+import json
 import logging
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -33,7 +36,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
+RESET_BASELINE_PATH = Path(__file__).resolve().parent.parent / "run" / "reset_baseline.json"
+
+
+def _save_reset_baseline(client: BitbankClient) -> None:
+    """リセット時点の実残高(JPY/XRP、onhand)を保存する。
+
+    リセット後の net_inventory / cash_flow が、実残高の変化と整合しているかを
+    inventory_consistency.pyが検証するための基準値。保存に失敗しても、
+    リセット自体は止めない(基準値が無ければ検証不能として扱われるだけ)。
+    """
+    try:
+        assets = client.get_assets()["assets"]
+        baseline = {"saved_at": datetime.now(timezone.utc).isoformat()}
+        for a in assets:
+            if a["asset"] in ("jpy", "xrp"):
+                baseline[f"{a['asset']}_onhand"] = float(a["onhand_amount"])
+        RESET_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RESET_BASELINE_PATH.write_text(json.dumps(baseline, ensure_ascii=False))
+        logger.info(f"リセット時の実残高を記録しました: {baseline}")
+    except Exception as e:
+        logger.warning(f"リセット時の実残高の記録に失敗しました(リセットは続行します): {e}")
+
+
 def reset_state(client: BitbankClient, store, pair: str, new_base_price: float, throttle_sec: float = 0.5) -> None:
+    _save_reset_baseline(client)
     logger.info("Step 1: 全未約定注文をキャンセルします(ローカル状態も同期)")
     result = cancel_all_orders(client, pair, store=store, throttle_sec=throttle_sec)
     logger.info(f"キャンセル結果: 成功={len(result['succeeded'])}件 失敗={len(result['failed'])}件")

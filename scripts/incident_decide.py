@@ -124,7 +124,14 @@ report_decisionツールを使って判断結果を報告してください。
 
     for block in message.content:
         if block.type == "tool_use" and block.name == "report_decision":
-            print(json.dumps(block.input, ensure_ascii=False))
+            decision = dict(block.input)
+            try:
+                from src.inventory_consistency import apply_consistency_override
+                decision = apply_consistency_override(decision, incident_data)
+            except Exception as e:
+                # 後処理の失敗は、Claudeの元の判断をそのまま採用する(安全側)。
+                print(f"在庫整合性による判断の補正に失敗しました(元の判断を使用): {e}", file=sys.stderr)
+            print(json.dumps(decision, ensure_ascii=False))
             return
 
     # tool_useが返らなかった場合は安全側でエスカレーション
