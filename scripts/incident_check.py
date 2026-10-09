@@ -149,7 +149,10 @@ def main():
         baseline_path = _Path(__file__).resolve().parent.parent / "run" / "reset_baseline.json"
         if baseline_path.exists():
             try:
-                baseline_xrp = float(_json.loads(baseline_path.read_text()).get("xrp_onhand"))
+                _raw = _json.loads(baseline_path.read_text()).get("xrp_onhand")
+                # xrp_onhandが無い、または数値でない場合は、基準値なしとして扱う
+                # (エラーにしない。errorsが空でないと、自動対応が条件1でエスカレーションするため)。
+                baseline_xrp = float(_raw) if isinstance(_raw, (int, float)) else None
             except Exception as e:
                 result["errors"].append(f"reset_baseline.jsonの読み込み失敗: {e}")
 
