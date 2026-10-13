@@ -36,7 +36,7 @@ class GridEnvelopeConfig:
     """
     grid_width_min_jpy: float = 0.6
     grid_width_max_jpy: float = 1.0
-    grid_width_default_jpy: float = 0.8
+    grid_width_default_jpy: float = 1.0
 
     max_buy_levels: int = 5
     max_sell_levels: int = 5
