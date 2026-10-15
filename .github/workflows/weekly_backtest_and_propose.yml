@@ -23,7 +23,7 @@ name: weekly-backtest-and-propose
 
 on:
   schedule:
-    - cron: "0 20 * * *"  # 毎日 20:00 UTC (日本時間 翌朝5:00頃)
+    - cron: "0 20 * * 0"  # 毎週日曜 20:00 UTC (日本時間 月曜朝5:00頃)
   workflow_dispatch: {}    # 手動実行も可能にしておく(動作確認用)
 
 jobs:
