@@ -46,9 +46,11 @@ def test_change_after_two_hours_is_accepted():
     assert _g(_d(), current="ACTIVE", last_change=NOW - timedelta(hours=3))["mode"] == "PAUSED"
 
 
-def test_resuming_from_pause_is_not_rate_limited():
+def test_resuming_from_pause_is_also_rate_limited():
+    """PAUSED自身の結果が次の入力を変え、4分で解除された反転(2026-10-15)の再発防止。"""
     r = _g(_d(mode="ACTIVE"), current="PAUSED", last_change=NOW - timedelta(minutes=10))
-    assert r["mode"] == "ACTIVE"
+    assert r["mode"] == "PAUSED" and r["overridden"]
+    assert _g(_d(mode="ACTIVE"), current="PAUSED", last_change=NOW - timedelta(hours=3))["mode"] == "ACTIVE"
 
 
 def test_forced_active_after_pause_hit_limit():
