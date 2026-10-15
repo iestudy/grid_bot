@@ -251,7 +251,7 @@ def main():
             attempt += 1
         return result
 
-    def abort_git_reflect(reason: str):
+    def abort_git_reflect(reason: str, detail: str = ""):
         """git反映を諦め、mainブランチに復帰してエスカレーションする。"""
         # ローカルのブランチ(コミット済みの変更を含む)は削除せず残し、
         # 手動での再利用に備える。リモートに作成済みのブランチだけ片付ける。
@@ -269,8 +269,12 @@ def main():
             )
         else:
             amounts_text = "新しいamountの値を控えられていません。resize_grid.pyを再実行してください。\n"
+        detail_text = ""
+        if detail and detail.strip():
+            detail_text = "コマンドの出力(先頭500文字):\n" + detail.strip()[:500] + "\n"
         body = (
             f"失敗理由: {reason}\n"
+            f"{detail_text}"
             f"reset_state.py/resize_grid.py --applyは既に実行済みですが、\n"
             f"mainへの反映が完了していないため、botは停止したままです。\n"
             f"{amounts_text}"
@@ -279,10 +283,30 @@ def main():
         notify("escalation", format_summary("エスカレーション通知: git反映に失敗しました", body))
         print(f"git反映に失敗したためエスカレーションしました: {reason}", file=sys.stderr)
 
+    # git pullの前に、未コミットのconfig.py(resize_grid.py --applyの結果)を退避する。
+    # 退避しないと、origin/mainがconfig.pyを更新している場合(日次パラメータ提案が
+    # 毎日更新する)、git pullが「未コミットの変更が上書きされる」として拒否する。
+    # 2026-10-15、5回リトライしても同じ理由で失敗した。通信不調ではなかった。
+    stash_result = run(["git", "stash"])
+    stashed = stash_result.returncode == 0 and "No local changes" not in stash_result.stdout
+
     for step in [["git", "checkout", "main"], ["git", "pull", "origin", "main"]]:
         result = run_with_retry(step)
         if result.returncode != 0:
-            abort_git_reflect(f"{' '.join(step)} が失敗")
+            abort_git_reflect(f"{' '.join(step)} が失敗", detail=(result.stdout or "") + (result.stderr or ""))
+            return
+
+    if stashed:
+        pop_result = run(["git", "stash", "pop"])
+        if pop_result.returncode != 0:
+            # 衝突した。作業ツリーを戻し、変更はstashに残す(失われないようにする)。
+            # unmerged(衝突の途中)のファイルには git checkout -- が使えないため、
+            # reset --hardで戻す。変更はstashに残っているので失われない。
+            run(["git", "reset", "--hard", "HEAD"])
+            abort_git_reflect(
+                "git stash popが衝突しました(変更は `git stash list` に残っています)",
+                detail=(pop_result.stdout or "") + (pop_result.stderr or ""),
+            )
             return
 
     checkout_result = run(["git", "checkout", "-b", branch_name])
