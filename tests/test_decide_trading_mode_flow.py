@@ -111,3 +111,24 @@ def test_bot_stopped_does_nothing(monkeypatch, tmp_path):
     m, calls, hist, modef = _setup(monkeypatch, tmp_path, ["--apply"], bot_active=False)
     m.main()
     assert calls == [] and not hist.exists() and not modef.exists()
+
+
+def test_failure_notice_is_rate_limited(monkeypatch, tmp_path):
+    m = _load()
+    sent = []
+
+    class FakeSlack:
+        def __init__(self, webhook_url=None):
+            pass
+
+        def _send(self, text):
+            sent.append(text)
+
+    import src.notifications as n
+    monkeypatch.setattr(n, "SlackNotifier", FakeSlack)
+    monkeypatch.setattr(m, "FAILURE_NOTICE", tmp_path / "notice.json")
+    args = type("A", (), {"no_slack": False})()
+    m.notify_failure({}, "Claude API失敗", "boom", args)
+    m.notify_failure({}, "Claude API失敗", "boom", args)   # 6時間以内: 送らない
+    m.notify_failure({}, "Claude出力が不正", "bad", args)  # 別の種類: 送る
+    assert len(sent) == 2

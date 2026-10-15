@@ -156,6 +156,36 @@ def format_slack(decision: dict, final: dict, facts: dict, applied: bool = False
     return "\n".join(lines)
 
 
+FAILURE_NOTICE = PROJECT_ROOT / 'run' / 'decision_failure_notice.json'
+
+
+def notify_failure(env: dict, kind: str, detail: str, args) -> None:
+    '''判断の失敗をSlackに通知する。同じ種類は6時間以内に繰り返さない。'''
+    if args.no_slack:
+        return
+    now = datetime.now(timezone.utc)
+    try:
+        last = json.loads(FAILURE_NOTICE.read_text()).get(kind)
+        if last and now - datetime.fromisoformat(last) < timedelta(hours=6):
+            return
+    except Exception:
+        pass
+    try:
+        from src.notifications import SlackNotifier
+        SlackNotifier(webhook_url=env.get('SLACK_WEBHOOK_URL'))._send(
+            '取引モード判断の失敗: ' + kind + chr(10) + now.astimezone(JST).strftime('%Y-%m-%d %H:%M JST')
+            + chr(10) + detail[:300] + chr(10) + 'モードは変更していません(現状維持)。')
+        FAILURE_NOTICE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            d = json.loads(FAILURE_NOTICE.read_text())
+        except Exception:
+            d = {}
+        d[kind] = now.isoformat()
+        FAILURE_NOTICE.write_text(json.dumps(d))
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-slack", action="store_true", help="Slackに送らない")
@@ -185,11 +215,13 @@ def main():
         raw = ask_claude(api_key, facts)
     except Exception as e:
         print(f"Claude APIの呼び出しに失敗しました(現状維持): {e}", file=sys.stderr)
+        notify_failure(env, 'Claude API失敗', str(e), args)
         sys.exit(1)
 
     decision = validate_decision(raw)
     if decision is None:
         print(f"Claudeの出力が不正でした(現状維持): {raw}", file=sys.stderr)
+        notify_failure(env, 'Claude出力が不正', str(raw), args)
         sys.exit(1)
 
     history = load_history()

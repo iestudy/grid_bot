@@ -1,0 +1,13 @@
+# /etc/systemd/system/grid_bot_trading_decision.timer として配置する。
+# 2時間おきに取引モードを判断する。
+
+[Unit]
+Description=Run grid_bot trading mode decision every 2 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=2h
+Unit=grid_bot_trading_decision.service
+
+[Install]
+WantedBy=timers.target
