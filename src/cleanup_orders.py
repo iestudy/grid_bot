@@ -136,3 +136,44 @@ if __name__ == "__main__":
 
     remaining = client.get_active_orders(args.pair)
     print(f"最終確認・残存注文数: {len(remaining.get('orders', []))}")
+
+
+def cancel_buy_orders(client: BitbankClient, pair: str, store=None, throttle_sec: float = 0.5) -> dict:
+    """
+    指定ペアの未約定の買い注文だけをキャンセルする(売りは維持する)。
+    取引モードPAUSEDで、新規の買いを止めると同時に、すでに出ている買いを取り消すために使う。
+
+    cancel_all_ordersと同じ形で、429のリトライと、store(DynamoDB)の同期を行う。
+    storeを渡さないと、取引所とローカルDBの状態が乖離するため、run_loopと同じ
+    storeを必ず渡すこと。
+
+    戻り値: {"succeeded": [{"order_id", "price", "amount"}...], "failed": [同]}
+    """
+    active = client.get_active_orders(pair)
+    buys = [o for o in active.get("orders", []) if o.get("side") == "buy"]
+    logger.info(f"取り消し対象の買い注文: {len(buys)}件 {[o['order_id'] for o in buys]}")
+
+    exchange_id_to_request_id = {}
+    if store is not None:
+        for request_id, record in store.list_open_orders().items():
+            if record.exchange_order_id:
+                exchange_id_to_request_id[record.exchange_order_id] = request_id
+
+    succeeded, failed = [], []
+    for i, o in enumerate(buys):
+        if i > 0:
+            time.sleep(throttle_sec)
+        info = {"order_id": o["order_id"], "price": o.get("price"),
+                "amount": o.get("remaining_amount") or o.get("start_amount")}
+        if cancel_order_with_retry(client, pair, o["order_id"]):
+            succeeded.append(info)
+            if store is not None:
+                from .state_store import OrderState
+                request_id = exchange_id_to_request_id.get(str(o["order_id"]))
+                if request_id:
+                    store.update_state(request_id, OrderState.CANCELED)
+                    logger.info(f"ローカル状態も同期: request_id={request_id} -> CANCELED")
+        else:
+            failed.append(info)
+
+    return {"succeeded": succeeded, "failed": failed}
