@@ -36,6 +36,7 @@ from .hard_stop_loss import HardStopLossManager, Action
 from .order_manager import reconcile_orders, apply_hard_stop_loss, sync_grid_orders
 from .position_ledger import PositionLedger
 from .notifications import SlackNotifier
+from .trading_mode import read_trading_mode, exclude_buys_if_paused
 
 # EMERGENCY_STOP発動時に書き出すフラグファイル。
 # systemdのpath unit(grid_bot_incident.path)がこのファイルの出現を監視し、
@@ -235,7 +236,13 @@ def run_loop(
                 )
             else:
                 try:
-                    placed = sync_grid_orders(client, store, pair, desired_levels, current_price=current_price, dry_run=dry_run)
+                    # 取引モード(run/trading_mode.json)。PAUSEDのときは買いを出さない。
+                    # 読めない・期限切れのときはACTIVE(通常運転)になる。
+                    trading_mode = read_trading_mode()
+                    levels_to_sync = exclude_buys_if_paused(desired_levels, trading_mode)
+                    if trading_mode == "PAUSED":
+                        logger.info("取引モードがPAUSEDのため、買い注文を出しません(売りは維持)。")
+                    placed = sync_grid_orders(client, store, pair, levels_to_sync, current_price=current_price, dry_run=dry_run)
                     if placed:
                         logger.info(f"新規発注: {placed}件")
                 except Exception as e:
