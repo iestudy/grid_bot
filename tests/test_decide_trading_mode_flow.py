@@ -132,3 +132,18 @@ def test_failure_notice_is_rate_limited(monkeypatch, tmp_path):
     m.notify_failure({}, "Claude API失敗", "boom", args)   # 6時間以内: 送らない
     m.notify_failure({}, "Claude出力が不正", "bad", args)  # 別の種類: 送る
     assert len(sent) == 2
+
+
+def test_worst_case_is_computed_from_config_not_from_open_orders():
+    """PAUSEDで買いが0件でも、ACTIVEなら出る買いのリスクが見えること(2026-10-15の誤読の再発防止)。"""
+    m = _load()
+    r = m.worst_case(206.0, 206.181, 1.0, 8.9, 5)
+    assert r["additional_xrp"] == 44.5
+    assert r["lowest_buy_price"] == 201.181
+    assert r["avg_buy_price"] == 203.181
+    assert r["unrealized_loss_if_drop_5pct_below_lowest_buy_jpy"] > 0
+
+
+def test_worst_case_without_config_is_unknown_not_zero():
+    m = _load()
+    assert m.worst_case(206.0, None, 1.0, 8.9, 5)["additional_xrp"] is None

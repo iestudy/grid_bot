@@ -123,9 +123,9 @@ def apply_guardrails(decision: dict, current_mode: str, last_change_at: Optional
         return {"mode": "ACTIVE", "overridden": True,
                 "note": f"PAUSEDが上限に達した後の{FORCED_ACTIVE_HOURS}時間は、ACTIVEを維持します。"}
 
-    # 頻繁な切り替えを防ぐ(PAUSEDの解除は、買いが止まり続けるのを避けるため常に許可する)
+    # 頻繁な切り替えを防ぐ。PAUSEDの解除も対象にする(PAUSED自身の結果が次の入力を変え、数分で解除される反転が実機で起きたため)。止め続けは、24時間の上限が防ぐ。
     if wanted != current_mode and last_change_at is not None and \
-            now - last_change_at < MIN_CHANGE_INTERVAL and not (current_mode == "PAUSED" and wanted == "ACTIVE"):
+            now - last_change_at < MIN_CHANGE_INTERVAL:
         return {"mode": current_mode, "overridden": True,
                 "note": "前回のモード変更から2時間以内のため、変更を受け付けません。"}
 

@@ -27,6 +27,8 @@ from src.trading_decision import (  # noqa: E402
 MODEL = "claude-sonnet-4-5-20250929"  # incident_decide.pyで動作実績のあるモデル
 JST = timezone(timedelta(hours=9))
 DRYRUN_LOG = PROJECT_ROOT / "run" / "decision_dryrun.jsonl"
+from src.config import GRID_ENVELOPE  # noqa: E402
+BUY_LEVELS = GRID_ENVELOPE.max_buy_levels
 
 
 def load_env(env_path: Path) -> dict:
@@ -57,20 +59,23 @@ def summarize_orders(orders: list) -> dict:
     }
 
 
-def worst_case(price, orders: list) -> dict:
-    """買いが全段約定した場合の追加在庫と、そこからさらに下落した場合の含み損の概算(コードで計算)。"""
-    buys = [(float(o["price"]), float(o["remaining_amount"])) for o in orders if o["side"] == "buy"]
-    if not buys or not price:
-        return {"additional_xrp": 0.0, "avg_buy_price": None, "unrealized_loss_if_drop_5pct_jpy": 0.0}
-    xrp = sum(a for _, a in buys)
-    avg = sum(p * a for p, a in buys) / xrp
-    lowest = min(p for p, _ in buys)
-    drop_price = lowest * 0.95
+def worst_case(price, base_price, grid_width, buy_amount, levels) -> dict:
+    '''ACTIVEなら出る買い(設定から計算)が全段約定した場合の追加在庫と、含み損の概算。
+
+    取引所に出ている買いではなく、設定から計算する。PAUSED中は買いが取り消されて0件になるため、
+    注文から計算すると『追加在庫0=リスクなし』と誤読される(2026-10-15に実機で発生)。'''
+    if not (base_price and grid_width and buy_amount and levels):
+        return {'additional_xrp': None, 'note': '設定が取得できないため計算できません'}
+    prices = [round(base_price - grid_width * i, 4) for i in range(1, levels + 1)]
+    xrp = buy_amount * levels
+    avg = sum(prices) / len(prices)
+    lowest = min(prices)
     return {
-        "additional_xrp": round(xrp, 2),
-        "avg_buy_price": round(avg, 3),
-        "lowest_buy_price": lowest,
-        "unrealized_loss_if_drop_5pct_below_lowest_buy_jpy": round((avg - drop_price) * xrp),
+        'basis': 'ACTIVEなら出る買い(設定から計算)',
+        'additional_xrp': round(xrp, 2),
+        'avg_buy_price': round(avg, 3),
+        'lowest_buy_price': lowest,
+        'unrealized_loss_if_drop_5pct_below_lowest_buy_jpy': round((avg - lowest * 0.95) * xrp),
     }
 
 
@@ -104,7 +109,7 @@ def build_facts(data: dict, snapshot: dict, current_mode: str, now: datetime) ->
             "xrp_total": xrp.get("onhand_amount"), "xrp_free": xrp.get("free_amount"),
             "total_assets_jpy": total,
             "orders": summarize_orders((data.get("active_orders") or {}).get("orders") or []),
-            "worst_case_if_all_buys_fill": worst_case(price, (data.get("active_orders") or {}).get("orders") or []),
+            "worst_case_if_all_buys_fill": worst_case(price, base, (data.get("config") or {}).get("grid_width_default_jpy"), (data.get("config") or {}).get("buy_amount_per_level_xrp"), BUY_LEVELS),
             "config": data.get("config"),
         },
         "market": snapshot,
