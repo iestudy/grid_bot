@@ -50,7 +50,9 @@ def test_resuming_from_pause_is_also_rate_limited():
     """PAUSED自身の結果が次の入力を変え、4分で解除された反転(2026-10-15)の再発防止。"""
     r = _g(_d(mode="ACTIVE"), current="PAUSED", last_change=NOW - timedelta(minutes=10))
     assert r["mode"] == "PAUSED" and r["overridden"]
-    assert _g(_d(mode="ACTIVE"), current="PAUSED", last_change=NOW - timedelta(hours=3))["mode"] == "ACTIVE"
+    # 2時間を過ぎ、再開の目安も満たされていれば、ACTIVEへ変更できる
+    assert _g(_d(mode="ACTIVE", resume_condition_met=True), current="PAUSED",
+              last_change=NOW - timedelta(hours=3))["mode"] == "ACTIVE"
 
 
 def test_forced_active_after_pause_hit_limit():
@@ -100,3 +102,35 @@ def test_pause_hit_limit():
     assert pause_hit_limit(NOW - timedelta(hours=24), NOW) is True
     assert pause_hit_limit(NOW - timedelta(hours=23), NOW) is False
     assert pause_hit_limit(None, NOW) is False
+
+
+def test_resume_to_active_rejected_unless_condition_met():
+    """PAUSED中は、再開の目安が満たされたと明示されない限りACTIVEにしない。"""
+    for met in (False, None):
+        r = _g(_d(mode="ACTIVE", resume_condition_met=met), current="PAUSED", last_change=NOW - timedelta(hours=3))
+        assert r["mode"] == "PAUSED" and r["overridden"]
+    ok = _g(_d(mode="ACTIVE", resume_condition_met=True), current="PAUSED", last_change=NOW - timedelta(hours=3))
+    assert ok["mode"] == "ACTIVE"
+
+
+def test_resume_condition_only_applies_when_currently_paused():
+    r = _g(_d(mode="ACTIVE", resume_condition_met=None), current="ACTIVE")
+    assert r["mode"] == "ACTIVE"
+
+
+def test_validate_normalizes_resume_condition_met():
+    assert validate_decision({"mode": "ACTIVE", "reason": "x", "resume_condition_met": True})["resume_condition_met"] is True
+    assert validate_decision({"mode": "ACTIVE", "reason": "x", "resume_condition_met": "yes"})["resume_condition_met"] is None
+
+
+def test_find_resume_condition_uses_the_first_pause_not_later_ones():
+    from src.trading_decision import find_resume_condition
+    start = NOW - timedelta(hours=5)
+    hist = [
+        {"at": (NOW - timedelta(hours=9)).isoformat(), "mode": "ACTIVE"},
+        {"at": start.isoformat(), "mode": "PAUSED", "decision": {"resume_condition": "210円超"}},
+        {"at": (NOW - timedelta(hours=3)).isoformat(), "mode": "PAUSED", "decision": {"resume_condition": "緩い条件"}},
+    ]
+    assert find_resume_condition(hist, start) == "210円超"
+    assert find_resume_condition(hist, None) is None
+    assert find_resume_condition([], start) is None
