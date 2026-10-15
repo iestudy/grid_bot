@@ -21,7 +21,7 @@ from src.trading_apply import (  # noqa: E402
 )
 from src.trading_decision import (  # noqa: E402
     DECISION_TOOL, SYSTEM_PROMPT, build_user_prompt, validate_decision, apply_guardrails,
-    restore_state, pause_hit_limit,
+    restore_state, pause_hit_limit, find_resume_condition,
 )
 
 MODEL = "claude-sonnet-4-5-20250929"  # incident_decide.pyで動作実績のあるモデル
@@ -79,6 +79,16 @@ def worst_case(price, base_price, grid_width, buy_amount, levels) -> dict:
     }
 
 
+def summarize_sell_orders(orders: list) -> dict:
+    '''売り注文だけの集計。買い側は、PAUSEDの操作で変わるため渡さない。'''
+    sells = [o for o in orders if o['side'] == 'sell']
+    return {
+        'sell_count': len(sells),
+        'sell_amount_total_xrp': round(sum(float(o['remaining_amount']) for o in sells), 4),
+        'highest_sell_price': max((float(o['price']) for o in sells), default=None),
+    }
+
+
 def gather_bot_state() -> dict:
     r = subprocess.run(
         [sys.executable, str(PROJECT_ROOT / "scripts" / "incident_check.py")],
@@ -105,15 +115,15 @@ def build_facts(data: dict, snapshot: dict, current_mode: str, now: datetime) ->
             "deviation_from_base_jpy": round(price - base, 3) if price and base else None,
             "net_inventory_since_reset_xrp": state.get("net_inventory"),
             "cash_flow_since_reset_jpy": state.get("cash_flow"),
-            "jpy_total": jpy.get("onhand_amount"), "jpy_free": jpy.get("free_amount"),
+            "jpy_total": jpy.get("onhand_amount"),
             "xrp_total": xrp.get("onhand_amount"), "xrp_free": xrp.get("free_amount"),
             "total_assets_jpy": total,
-            "orders": summarize_orders((data.get("active_orders") or {}).get("orders") or []),
+            "sell_orders": summarize_sell_orders((data.get("active_orders") or {}).get("orders") or []),
             "worst_case_if_all_buys_fill": worst_case(price, base, (data.get("config") or {}).get("grid_width_default_jpy"), (data.get("config") or {}).get("buy_amount_per_level_xrp"), BUY_LEVELS),
             "config": data.get("config"),
         },
         "market": snapshot,
-        "notes": "総資産の履歴と過去の判断の履歴は、まだ記録されていません(不明として扱ってください)。",
+        "notes": ("総資産の履歴は記録されていません(不明)。買い注文の本数・空き資金は、PAUSED中は買いが取り消されて""変わるため、意図的に渡していません。現在のモードがPAUSEDなら、買いが無いこと自体は市場の情報ではありません。"),
     }
 
 
@@ -214,7 +224,12 @@ def main():
     grid_width = (data.get("config") or {}).get("grid_width_default_jpy")
     snapshot = build_snapshot(fetch_hourly("xrp_jpy", 8), fetch_hourly("btc_jpy", 8), grid_width, now_ms)
     current_mode = read_trading_mode()
+    history = load_history()
+    state = restore_state(history, now)
     facts = build_facts(data, snapshot, current_mode, now)
+    if current_mode == 'PAUSED':
+        prev = find_resume_condition(history, state['pause_started_at'])
+        facts['previous_resume_condition'] = prev or '(記録なし。満たされたと確認できないものとして扱ってください)'
 
     try:
         raw = ask_claude(api_key, facts)
@@ -229,8 +244,6 @@ def main():
         notify_failure(env, 'Claude出力が不正', str(raw), args)
         sys.exit(1)
 
-    history = load_history()
-    state = restore_state(history, now)
     current_mode = read_trading_mode()  # 履歴ではなく、実際のモードファイルを優先する
     hit_limit = state['current_mode'] == 'PAUSED' and pause_hit_limit(state['pause_started_at'], now)
     final = apply_guardrails(

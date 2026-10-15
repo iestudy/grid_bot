@@ -31,6 +31,8 @@ DECISION_TOOL = {
             "market_view": {"type": "string", "description": "市場の見立て。1〜2文"},
             "resume_condition": {"type": "string", "description": "PAUSEDの場合、再開の目安。それ以外は空でよい"},
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "resume_condition_met": {"type": "boolean",
+                                     "description": "現在PAUSEDの場合のみ。入力の previous_resume_condition を、現在の指標と照らして、満たされているか。満たされていればtrue。PAUSEDでないときは省略"},
             "next_review_minutes": {"type": "integer", "description": f"次に見直すまでの分数({MIN_REVIEW_MIN}〜{MAX_REVIEW_MIN})"},
         },
         "required": ["mode", "reason", "market_view", "confidence", "next_review_minutes"],
@@ -65,6 +67,7 @@ SYSTEM_PROMPT = """あなたはXRP/JPYグリッド取引botの「取引モード
 【制約】
 - PAUSEDは最長24時間で、自動的にACTIVEへ戻ります。判断は約2時間おきに見直されます。
 - 判断に迷うときや、材料が不足するときは、ACTIVEを選んでください。止めすぎると取引の機会を失います。
+- 現在PAUSEDの場合、previous_resume_conditionに、PAUSEDにしたときの再開の目安が渡されます。それを現在の指標と一つずつ照らし、満たされているかをresume_condition_metに答えてください。一部しか満たされていなければfalseです。小さな反発だけで、満たされたとは判断しないでください。
 - 過去の判断と、その後の価格の動きが渡されます。自分の過去の判断が外れていないかを、振り返ってください。
 - 理由には、渡された数値を引用してください。渡されていない情報(ニュースなど)を、根拠にしないでください。
 """
@@ -99,6 +102,7 @@ def validate_decision(raw: dict) -> Optional[dict]:
         "market_view": (raw.get("market_view") or "").strip(),
         "resume_condition": (raw.get("resume_condition") or "").strip(),
         "confidence": confidence, "next_review_minutes": review,
+        "resume_condition_met": raw.get("resume_condition_met") if isinstance(raw.get("resume_condition_met"), bool) else None,
     }
 
 
@@ -111,6 +115,12 @@ def apply_guardrails(decision: dict, current_mode: str, last_change_at: Optional
     """
     wanted = decision["mode"]
     note = ""
+
+    # PAUSED中のACTIVE変更は、前回の『再開の目安』が満たされたと明示されたときだけ採用する。
+    # 小さな変動で判断が反転することを防ぐ(2026-10-15、positionが0.22->0.32で反転した)。
+    if current_mode == "PAUSED" and wanted == "ACTIVE" and decision.get("resume_condition_met") is not True:
+        return {"mode": "PAUSED", "overridden": True,
+                "note": "再開の目安が満たされたと確認できないため、PAUSEDを維持します。"}
 
     # 確信度lowのPAUSEDは採用しない
     if wanted == "PAUSED" and decision["confidence"] == "low":
@@ -174,3 +184,18 @@ def restore_state(history: List[dict], now: datetime) -> dict:
 def pause_hit_limit(pause_started_at: Optional[datetime], now: datetime) -> bool:
     """PAUSEDが、24時間の上限に達しているか。"""
     return pause_started_at is not None and now - pause_started_at >= timedelta(hours=MAX_PAUSE_HOURS)
+
+
+def find_resume_condition(history: List[dict], pause_started_at: Optional[datetime]) -> Optional[str]:
+    """現在のPAUSEDを開始した判断の『再開の目安』を、履歴から取り出す。
+
+    PAUSED中の判断が繰り返されても、目安は最初にPAUSEDにしたときのものを使う
+    (後の判断で、目安が緩められないようにするため)。見つからなければNone。
+    """
+    if pause_started_at is None:
+        return None
+    for rec in history:
+        if datetime.fromisoformat(rec["at"]) == pause_started_at:
+            text = ((rec.get("decision") or {}).get("resume_condition") or "").strip()
+            return text or None
+    return None
