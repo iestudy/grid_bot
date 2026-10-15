@@ -35,4 +35,11 @@ def _isolate_run_loop_flag_files(tmp_path, monkeypatch):
         monkeypatch.setattr(reset_state_module, "RESET_BASELINE_PATH", tmp_path / "run" / "reset_baseline.json")
     except Exception:
         pass
+    # 取引モードも、本物のrun/trading_mode.jsonを読まないよう隔離する
+    # (PAUSEDが残っていると、run_loopのテストが買いを出さずに失敗するため)。
+    try:
+        import src.trading_mode as trading_mode_module
+        monkeypatch.setattr(trading_mode_module, "TRADING_MODE_PATH", tmp_path / "run" / "trading_mode.json")
+    except Exception:
+        pass
     yield
