@@ -20,8 +20,12 @@ def load(path=LOG):
     return rows
 
 
-def compare(rows):
+def compare(rows, since=None):
     """基準=最初の行。各日の『持ち続けた場合』=基準のJPY+XRP×その日の価格。"""
+    if since:
+        rows = [r for r in rows if r["date_jst"] >= since]
+    if not rows:
+        return []
     base = rows[0]
     out = []
     for r in rows:
@@ -34,5 +38,10 @@ def compare(rows):
 if __name__ == "__main__":
     rows = load()
     print("日付        価格     実績     持ち続け  差(実績-持ち続け)")
-    for x in compare(rows):
+    import sys
+    since = sys.argv[1] if len(sys.argv) > 1 else None
+    if since and not any(r["date_jst"] >= since for r in rows):
+        print(f"{since} 以降の記録がまだありません。")
+        raise SystemExit(0)
+    for x in compare(rows, since):
         print(f"{x['date']}  {x['price']:7.2f}  {x['actual']:7d}  {x['hold']:7d}  {x['diff']:+d}")
