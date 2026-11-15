@@ -79,6 +79,26 @@ def compute_recommended_sell_amount_per_level(
     return round(recommended, 1)
 
 
+MIN_ORDER_UNIT = 0.1
+MIN_LEVEL_RATIO = 0.01  # 1段あたりの円額が総資産のこの割合未満なら、意味のある注文と見なさない
+
+
+def balance_amounts(free_jpy, free_xrp, price, cfg=GRID_ENVELOPE, budget_ratio=BUDGET_UTILIZATION_RATIO):
+    '''買い・売りを同じ円額基準に揃えた推奨量(buy, sell)を返す。
+    どちらかが最小単位(0.1)未満になるときはNone(出せない。0.0を黙って書かない)。
+    背景: 復旧時にXRPが少ないと売り0.0・買い大になり、買い下がりだけが残った(2026-11)。'''
+    sell_budget_jpy = free_xrp * price * budget_ratio
+    buy_budget_jpy = free_jpy * budget_ratio
+    budget_jpy = min(sell_budget_jpy, buy_budget_jpy)
+    buy = compute_recommended_buy_amount_per_level(budget_jpy / budget_ratio, price, cfg=cfg, budget_ratio=budget_ratio)
+    sell = compute_recommended_sell_amount_per_level(budget_jpy / price / budget_ratio, cfg=cfg, budget_ratio=budget_ratio)
+    total_jpy = free_jpy + free_xrp * price
+    min_per_level_jpy = total_jpy * MIN_LEVEL_RATIO
+    if buy < MIN_ORDER_UNIT or sell < MIN_ORDER_UNIT or sell * price < min_per_level_jpy:
+        return None
+    return buy, sell
+
+
 def update_config_file(new_buy_amount: float, new_sell_amount: float) -> None:
     with open(CONFIG_PATH) as f:
         content = f.read()
@@ -120,8 +140,12 @@ def main():
     current_buy_amount = GRID_ENVELOPE.buy_amount_per_level_xrp
     current_sell_amount = GRID_ENVELOPE.sell_amount_per_level_xrp
 
-    recommended_buy = compute_recommended_buy_amount_per_level(free_jpy, current_price, budget_ratio=args.budget_ratio)
-    recommended_sell = compute_recommended_sell_amount_per_level(free_xrp, budget_ratio=args.budget_ratio)
+    balanced = balance_amounts(free_jpy, free_xrp, current_price, budget_ratio=args.budget_ratio)
+    if balanced is None:
+        print(f'自由JPY{free_jpy}円・自由XRP{free_xrp}枚では、買い・売りを同額に揃えると最小単位(0.1)未満になるため、推奨値を出せません。')
+        print('config.pyは変更していません。')
+        raise SystemExit(2 if args.apply else 0)
+    recommended_buy, recommended_sell = balanced
 
     print(f"現在価格: {current_price}円")
     print(f"自由JPY残高: {free_jpy}円 / 自由XRP残高: {free_xrp}枚")

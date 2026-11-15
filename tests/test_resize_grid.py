@@ -88,3 +88,17 @@ def test_update_config_file_replaces_both_amounts(tmp_path, monkeypatch):
     assert "buy_amount_per_level_xrp: float = 0.6" in content
     assert "sell_amount_per_level_xrp: float = 1.2" in content
     assert "grid_width_default_jpy: float = 0.8" in content  # 他の行は無傷
+
+
+def test_balance_amounts_matches_buy_and_sell_in_yen():
+    from src.resize_grid import balance_amounts
+    cfg = GridEnvelopeConfig(grid_width_default_jpy=1.0, max_buy_levels=5, max_sell_levels=5)
+    buy, sell = balance_amounts(free_jpy=12000.0, free_xrp=57.0, price=154.0, cfg=cfg)
+    # 円額(量x価格)がほぼ揃う(丸め誤差の範囲)
+    assert abs(buy - sell) / max(buy, sell) < 0.2
+
+
+def test_balance_amounts_returns_none_instead_of_zero_sell():
+    from src.resize_grid import balance_amounts
+    cfg = GridEnvelopeConfig(grid_width_default_jpy=1.0, max_buy_levels=5, max_sell_levels=5)
+    assert balance_amounts(free_jpy=24000.0, free_xrp=1.0, price=196.0, cfg=cfg) is None
