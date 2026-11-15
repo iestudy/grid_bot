@@ -204,6 +204,15 @@ def main():
     # Step 3: resize_grid.py --apply
     resize_result = run([VENV_PYTHON, "-m", "src.resize_grid", "--pair", "xrp_jpy", "--apply"])
     executed_steps.append(f"resize_grid.py --apply: exit={resize_result.returncode}")
+    if resize_result.returncode != 0:
+        # 推奨値を出せない(残高の偏り等)。configは旧値のままのため、起動せずに人手へ。
+        rc = resize_result.returncode
+        body = f'resize_grid.py --applyが推奨値を出せませんでした(終了コード{rc})。'
+        body += chr(10) + '残高が偏っていて、買い・売りを揃えられない可能性があります。botは停止したままです。'
+        body += chr(10) + '現在の残高を確認し、手動でamountを決めてください。'
+        notify('escalation', format_summary('エスカレーション通知: 自動復旧を見送りました(resize_grid.py異常終了)', body))
+        print('resize_grid.pyが異常終了。エスカレーションしました。', file=sys.stderr)
+        return
 
     # resize_grid.py --applyが書き込んだ新しいamountを、git操作に入る前に
     # 控えておく。git反映が途中で失敗するとブランチごと変更が失われるため
