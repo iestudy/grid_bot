@@ -38,3 +38,17 @@ def test_load_skips_error_rows_and_broken_lines(tmp_path):
         + json.dumps({"date_jst": "2026-10-16", "error": "x", "total_jpy": None}) + chr(10)
         + "{broken" + chr(10))
     assert [r["date_jst"] for r in m.load(p)] == ["2026-10-15"]
+
+
+def test_compare_with_since_after_all_rows_returns_empty():
+    m = _load()
+    assert m.compare([_row("2026-10-15", 200.0, 1000.0, 10.0)], since="2026-11-15") == []
+
+
+def test_compare_since_uses_first_row_on_or_after_as_baseline():
+    m = _load()
+    rows = [_row("2026-10-15", 200.0, 1000.0, 10.0), _row("2026-11-15", 150.0, 5000.0, 20.0),
+            _row("2026-11-16", 140.0, 5000.0, 20.0)]
+    out = m.compare(rows, since="2026-11-15")
+    assert out[0]["date"] == "2026-11-15" and out[0]["diff"] == 0
+    assert out[1]["hold"] == round(5000.0 + 20.0 * 140.0)
