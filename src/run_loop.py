@@ -37,6 +37,7 @@ from .order_manager import reconcile_orders, apply_hard_stop_loss, sync_grid_ord
 from .position_ledger import PositionLedger
 from .notifications import SlackNotifier
 from .trading_mode import read_trading_mode, exclude_buys_if_paused
+from .inventory_cap import inventory_ratio, exclude_buys_if_over_cap
 
 # EMERGENCY_STOP発動時に書き出すフラグファイル。
 # systemdのpath unit(grid_bot_incident.path)がこのファイルの出現を監視し、
@@ -88,6 +89,29 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+_BALANCE_CACHE = {'at': 0.0, 'xrp': None, 'jpy': None}
+
+
+def _cached_balances(client, ttl_sec: float = 60.0):
+    '''在庫上限の判定用に、実残高(xrp, jpy)を60秒キャッシュして返す。
+    取得に失敗しても例外は投げず、(None, None)を返す(取引を止めないため)。'''
+    now = time.time()
+    if now - _BALANCE_CACHE['at'] < ttl_sec:
+        return _BALANCE_CACHE['xrp'], _BALANCE_CACHE['jpy']
+    try:
+        xrp = jpy = None
+        for a in client.get_assets()['assets']:
+            if a['asset'] == 'xrp':
+                xrp = float(a['onhand_amount'])
+            elif a['asset'] == 'jpy':
+                jpy = float(a['onhand_amount'])
+        _BALANCE_CACHE.update({'at': now, 'xrp': xrp, 'jpy': jpy})
+    except Exception as e:
+        logger.warning(f'在庫上限用の残高取得に失敗(上限判定をスキップ): {e}')
+        _BALANCE_CACHE.update({'at': now, 'xrp': None, 'jpy': None})
+    return _BALANCE_CACHE['xrp'], _BALANCE_CACHE['jpy']
 
 
 def _fetch_current_price(client: BitbankClient, pair: str, price_feed=None) -> tuple:
@@ -240,6 +264,12 @@ def run_loop(
                     # 読めない・期限切れのときはACTIVE(通常運転)になる。
                     trading_mode = read_trading_mode()
                     levels_to_sync = exclude_buys_if_paused(desired_levels, trading_mode)
+                    _xrp, _jpy = _cached_balances(client)
+                    _ratio = inventory_ratio(_xrp, _jpy, current_price)
+                    _before = len(levels_to_sync)
+                    levels_to_sync = exclude_buys_if_over_cap(levels_to_sync, _ratio)
+                    if len(levels_to_sync) < _before:
+                        logger.info(f'在庫比率{_ratio:.1%}が上限以上のため、買い注文を出しません(売りは維持)。')
                     if trading_mode == "PAUSED":
                         logger.info("取引モードがPAUSEDのため、買い注文を出しません(売りは維持)。")
                     placed = sync_grid_orders(client, store, pair, levels_to_sync, current_price=current_price, dry_run=dry_run)
