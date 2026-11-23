@@ -99,6 +99,33 @@ def balance_amounts(free_jpy, free_xrp, price, cfg=GRID_ENVELOPE, budget_ratio=B
     return buy, sell
 
 
+ONE_SIDED_EMPTY_RATIO = 0.05  # 片側の評価額が総資産のこの割合未満なら、ほぼ空と見なす
+ONE_SIDED_BUDGET_RATIO = 0.40  # 片側再開のとき、主側の残高の何割を予算にするか
+
+
+def one_sided_amounts(free_jpy, free_xrp, price, cfg=GRID_ENVELOPE, ratio=ONE_SIDED_BUDGET_RATIO):
+    '''残高が片側に偏っているとき、主側だけで再開する推奨量(buy, sell)を返す。
+    もう一方は最小単位(0.1)にする(0.0にしない)。偏っていない、または両方ほぼ空ならNone。
+    背景: 上昇で売り切ってJPY主になると、買い・売りを揃えられず自動復旧が止まった(2026-11-23)。'''
+    total_jpy = free_jpy + free_xrp * price
+    if total_jpy <= 0:
+        return None
+    min_value = total_jpy * ONE_SIDED_EMPTY_RATIO
+    jpy_empty = free_jpy < min_value
+    xrp_empty = free_xrp * price < min_value
+    if jpy_empty == xrp_empty:
+        return None
+    if xrp_empty:
+        buy = compute_recommended_buy_amount_per_level(free_jpy, price, cfg=cfg, budget_ratio=ratio)
+        sell = MIN_ORDER_UNIT
+    else:
+        buy = MIN_ORDER_UNIT
+        sell = compute_recommended_sell_amount_per_level(free_xrp, cfg=cfg, budget_ratio=ratio)
+    if buy < MIN_ORDER_UNIT or sell < MIN_ORDER_UNIT:
+        return None
+    return buy, sell
+
+
 def update_config_file(new_buy_amount: float, new_sell_amount: float) -> None:
     with open(CONFIG_PATH) as f:
         content = f.read()
@@ -141,6 +168,10 @@ def main():
     current_sell_amount = GRID_ENVELOPE.sell_amount_per_level_xrp
 
     balanced = balance_amounts(free_jpy, free_xrp, current_price, budget_ratio=args.budget_ratio)
+    if balanced is None:
+        balanced = one_sided_amounts(free_jpy, free_xrp, current_price)
+        if balanced is not None:
+            print('残高が片側に偏っているため、片側再開の推奨値を使います(もう一方は最小単位0.1)。')
     if balanced is None:
         print(f'自由JPY{free_jpy}円・自由XRP{free_xrp}枚では、買い・売りを同額に揃えると最小単位(0.1)未満になるため、推奨値を出せません。')
         print('config.pyは変更していません。')

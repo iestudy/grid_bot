@@ -102,3 +102,25 @@ def test_balance_amounts_returns_none_instead_of_zero_sell():
     from src.resize_grid import balance_amounts
     cfg = GridEnvelopeConfig(grid_width_default_jpy=1.0, max_buy_levels=5, max_sell_levels=5)
     assert balance_amounts(free_jpy=24000.0, free_xrp=1.0, price=196.0, cfg=cfg) is None
+
+
+def _cfg():
+    return GridEnvelopeConfig(grid_width_default_jpy=1.0, max_buy_levels=5, max_sell_levels=5)
+
+
+def test_one_sided_jpy_heavy_gives_buy_and_min_sell():
+    from src.resize_grid import one_sided_amounts
+    buy, sell = one_sided_amounts(free_jpy=20919.0, free_xrp=2.35, price=157.6, cfg=_cfg())
+    assert buy > 10 and sell == 0.1
+
+
+def test_one_sided_xrp_heavy_gives_sell_and_min_buy():
+    from src.resize_grid import one_sided_amounts
+    buy, sell = one_sided_amounts(free_jpy=50.0, free_xrp=100.0, price=150.0, cfg=_cfg())
+    assert buy == 0.1 and sell > 5
+
+
+def test_one_sided_none_when_not_skewed_or_both_empty():
+    from src.resize_grid import one_sided_amounts
+    assert one_sided_amounts(free_jpy=12000.0, free_xrp=57.0, price=154.0, cfg=_cfg()) is None
+    assert one_sided_amounts(free_jpy=0.0, free_xrp=0.0, price=154.0, cfg=_cfg()) is None
