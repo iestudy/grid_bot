@@ -37,7 +37,7 @@ from .order_manager import reconcile_orders, apply_hard_stop_loss, sync_grid_ord
 from .position_ledger import PositionLedger
 from .notifications import SlackNotifier
 from .trading_mode import read_trading_mode, exclude_buys_if_paused
-from .inventory_cap import inventory_ratio, exclude_buys_if_over_cap
+from .inventory_cap import inventory_ratio, exclude_buys_if_over_cap, limit_buys_by_projected_ratio
 
 # EMERGENCY_STOP発動時に書き出すフラグファイル。
 # systemdのpath unit(grid_bot_incident.path)がこのファイルの出現を監視し、
@@ -268,6 +268,7 @@ def run_loop(
                     _ratio = inventory_ratio(_xrp, _jpy, current_price)
                     _before = len(levels_to_sync)
                     levels_to_sync = exclude_buys_if_over_cap(levels_to_sync, _ratio)
+                    levels_to_sync = limit_buys_by_projected_ratio(levels_to_sync, _xrp, _jpy, current_price)
                     if len(levels_to_sync) < _before:
                         logger.info(f'在庫比率{_ratio:.1%}が上限以上のため、買い注文を出しません(売りは維持)。')
                     if trading_mode == "PAUSED":
