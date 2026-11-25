@@ -458,3 +458,99 @@ def test_apply_hard_stop_loss_skips_forced_close_for_zero_net_inventory():
 
     assert action == Action.EMERGENCY_STOP
     client.create_order.assert_not_called()
+
+
+# --- 自由残高ガード(2026-11の60001ループ対策) ---
+
+def _sell_levels(prices, amount=6.0):
+    return [GridLevel(side="sell", price=p, amount=amount) for p in prices]
+
+
+def test_sync_grid_orders_skips_sells_when_free_xrp_insufficient():
+    """旧グリッドの売りがXRPを拘束し、自由残高3.35XRPしか無い状況の再現。
+    6XRPの売りは1件も発注されず、APIも呼ばれないこと。"""
+    client = make_mock_client()
+    store = InMemoryStateStore()
+    desired = _sell_levels([145.9081, 146.9081, 147.9081, 148.9081, 149.9081])
+
+    placed = sync_grid_orders(
+        client, store, "xrp_jpy", desired, current_price=142.35, dry_run=False,
+        min_interval_sec=0, free_xrp=3.3525, free_jpy=11109.48,
+    )
+
+    assert placed == 0
+    client.create_order.assert_not_called()
+    assert store.list_open_orders() == {}  # FAILEDレコードも作らない
+
+
+def test_sync_grid_orders_places_only_as_many_sells_as_free_xrp_allows():
+    client = make_mock_client()
+    client.create_order.return_value = {"order_id": 1, "status": "UNFILLED"}
+    store = InMemoryStateStore()
+    desired = _sell_levels([101.0, 102.0, 103.0])
+
+    placed = sync_grid_orders(
+        client, store, "xrp_jpy", desired, current_price=100.0, dry_run=False,
+        min_interval_sec=0, free_xrp=13.0,
+    )
+
+    assert placed == 2
+    prices = [c.kwargs["price"] for c in client.create_order.call_args_list]
+    assert prices == [101.0, 102.0]  # base_priceに近い順に優先
+
+
+def test_sync_grid_orders_limits_buys_by_free_jpy():
+    client = make_mock_client()
+    client.create_order.return_value = {"order_id": 1, "status": "UNFILLED"}
+    store = InMemoryStateStore()
+    desired = [GridLevel(side="buy", price=p, amount=4.0) for p in (99.0, 98.0, 97.0)]
+
+    placed = sync_grid_orders(
+        client, store, "xrp_jpy", desired, current_price=100.0, dry_run=False,
+        min_interval_sec=0, free_jpy=500.0,  # 99*4=396 は出せる、次の98*4=392は足りない
+    )
+
+    assert placed == 1
+    assert client.create_order.call_args.kwargs["price"] == 99.0
+
+
+def test_sync_grid_orders_without_free_balances_is_backward_compatible():
+    client = make_mock_client()
+    client.create_order.return_value = {"order_id": 1, "status": "UNFILLED"}
+    store = InMemoryStateStore()
+    desired = _sell_levels([101.0, 102.0])
+
+    placed = sync_grid_orders(client, store, "xrp_jpy", desired, current_price=100.0, dry_run=False, min_interval_sec=0)
+
+    assert placed == 2
+
+
+def test_sync_grid_orders_counts_only_successful_orders():
+    """発注が失敗した分は戻り値(ログの「新規発注: N件」)に含めない。"""
+    from src.bitbank_client import BitbankAPIError
+    client = make_mock_client()
+    client.create_order.side_effect = BitbankAPIError("保有数量不足", code=60001)
+    store = InMemoryStateStore()
+    desired = _sell_levels([101.0, 102.0])
+
+    placed = sync_grid_orders(client, store, "xrp_jpy", desired, current_price=100.0, dry_run=False, min_interval_sec=0)
+
+    assert placed == 0
+    assert client.create_order.call_count == 2
+
+
+def test_balance_skip_warning_is_not_repeated_every_cycle(caplog):
+    import logging
+    import src.order_manager as om
+    om._last_balance_skip_signature = None
+    client = make_mock_client()
+    store = InMemoryStateStore()
+    desired = _sell_levels([101.0, 102.0])
+
+    with caplog.at_level(logging.WARNING, logger="src.order_manager"):
+        for _ in range(3):
+            sync_grid_orders(client, store, "xrp_jpy", desired, current_price=100.0,
+                             dry_run=False, min_interval_sec=0, free_xrp=1.0)
+
+    warnings = [r for r in caplog.records if "自由残高不足" in r.getMessage()]
+    assert len(warnings) == 1
