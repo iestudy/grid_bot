@@ -218,6 +218,8 @@ def sync_grid_orders(
     current_price: Optional[float] = None,
     dry_run: bool = True,
     min_interval_sec: float = 0.3,
+    free_xrp: Optional[float] = None,
+    free_jpy: Optional[float] = None,
 ) -> int:
     """
     望ましいグリッド(desired_levels)のうち、現在OPENでない(価格・方向が一致する
@@ -236,7 +238,17 @@ def sync_grid_orders(
     プロアクティブなスロットリング。個別発注側の指数バックオフ(429対応)と
     合わせて二段構えの対策とする。dry_runでは待機しない。
 
-    戻り値: 新規発注した本数
+    free_xrp / free_jpy: 取引所の自由残高(locked分を除いた、新規注文に使える量)。
+    渡した場合、残高が足りないレベルは発注自体をスキップする。売りはfree_xrp、
+    買いはfree_jpy(price*amount)を、desired_levelsの並び順(base_priceに近い順)に
+    消費していく。Noneの場合は残高チェックを行わない(後方互換・取得失敗時に
+    取引を止めないため)。
+    このガードが無いと、ドリフト補正前の旧グリッドの売り注文がXRPを拘束している
+    状態で、新グリッドの売りを毎周期発注しては保有数量不足(60001)で拒否される
+    ループになる(2026-11、1時間に約1,500回の60001が発生し、その度にFAILED
+    レコードがDynamoDBに蓄積していた)。
+
+    戻り値: 新規発注に成功した本数(失敗した発注は数えない)
     """
     open_orders = store.list_open_orders()
     existing_keys = {
@@ -244,7 +256,12 @@ def sync_grid_orders(
         if rec.state in (OrderState.PENDING, OrderState.OPEN)
     }
 
+    remaining_xrp = free_xrp
+    remaining_jpy = free_jpy
+    skipped_for_balance = {"buy": 0, "sell": 0}
+
     placed_count = 0
+    attempted = 0
     for level in desired_levels:
         key = (level.side, round(level.price, 4))
         if key in existing_keys:
@@ -262,12 +279,52 @@ def sync_grid_orders(
                     f"(現在価格={current_price}以下のため即キャンセルされる可能性)"
                 )
                 continue
-        if placed_count > 0 and not dry_run:
+        if level.side == "sell" and remaining_xrp is not None:
+            if level.amount > remaining_xrp + 1e-9:
+                skipped_for_balance["sell"] += 1
+                continue
+        if level.side == "buy" and remaining_jpy is not None:
+            if level.price * level.amount > remaining_jpy + 1e-9:
+                skipped_for_balance["buy"] += 1
+                continue
+        if attempted > 0 and not dry_run:
             time.sleep(min_interval_sec)
-        place_grid_level(client, store, pair, level, dry_run=dry_run)
+        attempted += 1
+        request_id = place_grid_level(client, store, pair, level, dry_run=dry_run)
+        if request_id is None:
+            continue
         placed_count += 1
+        if level.side == "sell" and remaining_xrp is not None:
+            remaining_xrp -= level.amount
+        if level.side == "buy" and remaining_jpy is not None:
+            remaining_jpy -= level.price * level.amount
 
+    _log_balance_skips(skipped_for_balance, free_xrp, free_jpy)
     return placed_count
+
+
+# 残高不足スキップのログを、状況が変わったときだけWARNINGで出すための前回値。
+# 毎周期(10秒ごと)同じ警告を出すとログが埋もれるため。
+_last_balance_skip_signature = None
+
+
+def _log_balance_skips(skipped: dict, free_xrp: Optional[float], free_jpy: Optional[float]) -> None:
+    global _last_balance_skip_signature
+    signature = (skipped["buy"], skipped["sell"])
+    if signature == (0, 0):
+        if _last_balance_skip_signature not in (None, (0, 0)):
+            logger.info("自由残高不足による発注スキップが解消しました。")
+        _last_balance_skip_signature = signature
+        return
+    message = (
+        f"自由残高不足のため発注をスキップ: 売り{skipped['sell']}件(free_xrp={free_xrp}) "
+        f"買い{skipped['buy']}件(free_jpy={free_jpy})"
+    )
+    if signature != _last_balance_skip_signature:
+        logger.warning(message + "。状況が変わるまで、このメッセージは繰り返しません。")
+    else:
+        logger.debug(message)
+    _last_balance_skip_signature = signature
 
 
 def apply_hard_stop_loss(

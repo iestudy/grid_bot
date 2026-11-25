@@ -91,27 +91,43 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-_BALANCE_CACHE = {'at': 0.0, 'xrp': None, 'jpy': None}
+_BALANCE_CACHE = {'at': 0.0, 'xrp': None, 'jpy': None, 'free_xrp': None, 'free_jpy': None}
+
+
+def _refresh_balance_cache(client, ttl_sec: float = 60.0) -> None:
+    '''実残高(保有量onhandと自由残高free)を60秒キャッシュする。
+    取得に失敗しても例外は投げず、全てNoneにする(取引を止めないため)。'''
+    now = time.time()
+    if now - _BALANCE_CACHE['at'] < ttl_sec:
+        return
+    try:
+        values = {'xrp': None, 'jpy': None, 'free_xrp': None, 'free_jpy': None}
+        for a in client.get_assets()['assets']:
+            if a['asset'] in ('xrp', 'jpy'):
+                values[a['asset']] = float(a['onhand_amount'])
+                if a.get('free_amount') is not None:
+                    values['free_' + a['asset']] = float(a['free_amount'])
+        _BALANCE_CACHE.update({'at': now, **values})
+    except Exception as e:
+        logger.warning(f'残高取得に失敗(在庫上限・自由残高の判定をスキップ): {e}')
+        _BALANCE_CACHE.update({'at': now, 'xrp': None, 'jpy': None, 'free_xrp': None, 'free_jpy': None})
 
 
 def _cached_balances(client, ttl_sec: float = 60.0):
-    '''在庫上限の判定用に、実残高(xrp, jpy)を60秒キャッシュして返す。
-    取得に失敗しても例外は投げず、(None, None)を返す(取引を止めないため)。'''
-    now = time.time()
-    if now - _BALANCE_CACHE['at'] < ttl_sec:
-        return _BALANCE_CACHE['xrp'], _BALANCE_CACHE['jpy']
-    try:
-        xrp = jpy = None
-        for a in client.get_assets()['assets']:
-            if a['asset'] == 'xrp':
-                xrp = float(a['onhand_amount'])
-            elif a['asset'] == 'jpy':
-                jpy = float(a['onhand_amount'])
-        _BALANCE_CACHE.update({'at': now, 'xrp': xrp, 'jpy': jpy})
-    except Exception as e:
-        logger.warning(f'在庫上限用の残高取得に失敗(上限判定をスキップ): {e}')
-        _BALANCE_CACHE.update({'at': now, 'xrp': None, 'jpy': None})
+    '''在庫上限の判定用に、実残高(xrp, jpy)のonhand_amountを返す。'''
+    _refresh_balance_cache(client, ttl_sec)
     return _BALANCE_CACHE['xrp'], _BALANCE_CACHE['jpy']
+
+
+def _cached_free_balances(client, ttl_sec: float = 60.0):
+    '''発注前の残高チェック用に、自由残高(free_xrp, free_jpy)を返す。'''
+    _refresh_balance_cache(client, ttl_sec)
+    return _BALANCE_CACHE['free_xrp'], _BALANCE_CACHE['free_jpy']
+
+
+def _invalidate_balance_cache() -> None:
+    '''発注で自由残高が減ったので、次周期は取り直させる。'''
+    _BALANCE_CACHE['at'] = 0.0
 
 
 def _fetch_current_price(client: BitbankClient, pair: str, price_feed=None) -> tuple:
@@ -273,9 +289,14 @@ def run_loop(
                         logger.info(f'在庫比率{_ratio:.1%}が上限以上のため、買い注文を出しません(売りは維持)。')
                     if trading_mode == "PAUSED":
                         logger.info("取引モードがPAUSEDのため、買い注文を出しません(売りは維持)。")
-                    placed = sync_grid_orders(client, store, pair, levels_to_sync, current_price=current_price, dry_run=dry_run)
+                    _free_xrp, _free_jpy = _cached_free_balances(client)
+                    placed = sync_grid_orders(
+                        client, store, pair, levels_to_sync, current_price=current_price, dry_run=dry_run,
+                        free_xrp=_free_xrp, free_jpy=_free_jpy,
+                    )
                     if placed:
                         logger.info(f"新規発注: {placed}件")
+                        _invalidate_balance_cache()
                 except Exception as e:
                     logger.error(f"グリッド発注同期に失敗: {e}")
 

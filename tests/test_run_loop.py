@@ -442,3 +442,19 @@ def test_run_loop_places_new_orders_when_within_deviation_threshold():
         )
 
     mock_sync.assert_called_once()
+
+
+def test_cached_free_balances_reads_free_amount_not_onhand():
+    from unittest.mock import MagicMock
+    import src.run_loop as rl
+    rl._invalidate_balance_cache()
+    client = MagicMock()
+    client.get_assets.return_value = {"assets": [
+        {"asset": "jpy", "onhand_amount": "11109.4826", "free_amount": "11109.4826"},
+        {"asset": "xrp", "onhand_amount": "63.3525", "free_amount": "3.3525"},
+    ]}
+
+    assert rl._cached_balances(client) == (63.3525, 11109.4826)
+    assert rl._cached_free_balances(client) == (3.3525, 11109.4826)
+    assert client.get_assets.call_count == 1  # 同じキャッシュを共有する
+    rl._invalidate_balance_cache()
